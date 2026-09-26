@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically fill missing cached public company profiles
+
+[Timer]
+OnBootSec=4min
+OnUnitInactiveSec=15min
+AccuracySec=30s
+RandomizedDelaySec=30s
+Unit=job-tracker-company-profile-sync.service
+
+[Install]
+WantedBy=timers.target

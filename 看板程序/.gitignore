@@ -1,0 +1,62 @@
+# 飞书密钥（绝对不能提交）
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 临时文件 / 调试产物
+*.output
+sync_report.txt
+sync_report_dry_run.txt
+audit_final.json
+pool_live_state.json
+main_field_options.json
+snapshot_final.json
+post_mortem.json
+batch_update_payload.json
+
+# 历史会话产物（每个 SESSION 的痕迹文件）
+FINAL*.txt
+FINAL*.md
+FINAL*.json
+STATE*.txt
+STATE*.md
+SESSION*.txt
+SESSION*.md
+SESSION*.json
+COMPANIES*.txt
+COMPANIES*.md
+POOL*.txt
+POOL*.md
+SUMMARY*.md
+SUMMARY*.txt
+VERIFICATION*.txt
+main_final_synced.txt
+
+# Playwright 抓取缓存
+data/rendered/
+data/links/
+data/jobs/
+data/job_pages/
+data/job_pages2/
+data/job_pages3/
+data/job_pages_batch2/
+data/dji_network/
+data/full_jd/
+src/boss_log.txt
+src/_js_backup.txt
+src/_tail_backup.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

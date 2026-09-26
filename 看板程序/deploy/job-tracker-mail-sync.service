@@ -1,0 +1,30 @@
+[Unit]
+Description=Analyze recruitment mail and update the job tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobtracker
+Group=jobtracker
+WorkingDirectory=/opt/job-tracker/current
+EnvironmentFile=-/etc/job-tracker/feishu.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=Asia/Shanghai
+Environment=JOB_TRACKER_DATA_DIR=/var/lib/job-tracker/data
+Environment=JOB_TRACKER_BACKUP_DIR=/var/lib/job-tracker/backups
+Environment=JOB_TRACKER_ENV_PATH=/etc/job-tracker/feishu.env
+Environment=QQ_MAIL_AUTH_CODE_FILE=/etc/job-tracker/qq-mail-auth-code
+Environment=CODEX_HOME=/var/lib/job-tracker/codex
+Environment=MAIL_CODEX_FAST_MODEL=gpt-5.6-luna
+Environment=MAIL_CODEX_REVIEW_MODEL=gpt-5.6-terra
+ExecStart=/opt/job-tracker/venv/bin/python -m tools.mail.scheduled_sync --apply
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/job-tracker
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=768M

@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll recruitment mail every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15min
+AccuracySec=30s
+RandomizedDelaySec=30s
+Unit=job-tracker-mail-sync.service
+
+[Install]
+WantedBy=timers.target

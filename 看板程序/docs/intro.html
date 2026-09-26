@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>嵌入式校招看板 · 飞书投递进度驾驶舱</title>
+<style>
+:root{
+  --blue:#4a9eff;
+  --purple:#a371f7;
+  --pink:#f778ba;
+  --bg:#050814;
+  --bg-2:#080d1d;
+  --ink:#f7f9ff;
+  --muted:rgba(226,232,255,.72);
+  --subtle:rgba(226,232,255,.48);
+  --hairline:rgba(255,255,255,.12);
+  --glass:rgba(12,18,34,.58);
+  --glass-strong:rgba(13,20,38,.76);
+  --shadow:0 24px 70px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.08);
+  --shadow-soft:0 18px 52px rgba(0,0,0,.28);
+  --ease:cubic-bezier(.4, 0, .2, 1);
+  --spring:cubic-bezier(.34, 1.56, .64, 1);
+  --font:-apple-system, "Segoe UI Variable", "SF Pro Display", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono:"JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+[data-theme="light"]{
+  --blue:#0969da;
+  --purple:#8250df;
+  --pink:#bf3989;
+  --bg:#f7f9ff;
+  --bg-2:#eef3ff;
+  --ink:#08111f;
+  --muted:rgba(20,30,48,.70);
+  --subtle:rgba(20,30,48,.48);
+  --hairline:rgba(8,17,31,.12);
+  --glass:rgba(255,255,255,.60);
+  --glass-strong:rgba(255,255,255,.78);
+  --shadow:0 24px 70px rgba(66,84,120,.18), inset 0 1px 0 rgba(255,255,255,.86);
+  --shadow-soft:0 18px 52px rgba(66,84,120,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden}
+body{
+  min-height:100vh;
+  font-family:var(--font);
+  font-size:15px;
+  line-height:1.62;
+  color:var(--ink);
+  background:var(--bg);
+  transition:background .5s var(--ease), color .5s var(--ease);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:geometricPrecision;
+}
+button,a{font:inherit;color:inherit}
+button{border:0;background:none;cursor:pointer}
+a{text-decoration:none}
+svg{display:block;flex:0 0 auto}
+
+/* Mesh flowing background */
+.mesh{
+  position:fixed;
+  inset:-18%;
+  z-index:0;
+  pointer-events:none;
+  overflow:hidden;
+  background:
+    radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--blue) 35%, transparent), transparent 30%),
+    radial-gradient(circle at 80% 18%, color-mix(in srgb, var(--purple) 34%, transparent), transparent 30%),
+    radial-gradient(circle at 52% 88%, color-mix(in srgb, var(--pink) 26%, transparent), transparent 34%),
+    linear-gradient(135deg, var(--bg), var(--bg-2));
+}
+.mesh:before,.mesh:after{
+  content:"";
+  position:absolute;
+  inset:0;
+  transform-origin:center;
+  will-change:transform, filter;
+}
+.mesh:before{
+  background:
+    radial-gradient(720px circle at 15% 32%, color-mix(in srgb, var(--blue) 34%, transparent), transparent 62%),
+    radial-gradient(760px circle at 74% 12%, color-mix(in srgb, var(--purple) 30%, transparent), transparent 58%),
+    radial-gradient(680px circle at 62% 78%, color-mix(in srgb, var(--pink) 24%, transparent), transparent 60%);
+  filter:blur(26px) saturate(1.18);
+  animation:meshDrift 18s var(--ease) infinite alternate;
+}
+.mesh:after{
+  inset:-10%;
+  background:
+    conic-gradient(from 180deg at 50% 50%, transparent 0 12%, color-mix(in srgb, var(--blue) 16%, transparent) 18%, transparent 28%, color-mix(in srgb, var(--purple) 14%, transparent) 42%, transparent 56%, color-mix(in srgb, var(--pink) 14%, transparent) 72%, transparent 100%),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.028) 0 1px, transparent 1px 90px),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.022) 0 1px, transparent 1px 90px);
+  filter:blur(18px);
+  opacity:.72;
+  animation:meshSpin 34s linear infinite;
+}
+[data-theme="light"] .mesh:after{opacity:.38}
+@keyframes meshDrift{
+  0%{transform:translate3d(-2%,1%,0) scale(1) rotate(-2deg)}
+  100%{transform:translate3d(2%,-2%,0) scale(1.08) rotate(3deg)}
+}
+@keyframes meshSpin{to{transform:rotate(1turn) scale(1.05)}}
+
+/* Floating top pill */
+.topbar{
+  position:fixed;
+  left:50%;
+  top:22px;
+  z-index:20;
+  transform:translateX(-50%);
+  width:min(680px, calc(100vw - 32px));
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  padding:10px 10px 10px 14px;
+  border-radius:999px;
+  background:var(--glass-strong);
+  border:1px solid var(--hairline);
+  box-shadow:var(--shadow-soft);
+  backdrop-filter:blur(24px) saturate(1.35);
+  -webkit-backdrop-filter:blur(24px) saturate(1.35);
+}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-mark{
+  width:30px;height:30px;border-radius:9px;
+  background:linear-gradient(135deg,var(--blue),var(--purple) 58%,var(--pink));
+  box-shadow:0 10px 30px color-mix(in srgb, var(--purple) 45%, transparent), inset 0 1px 0 rgba(255,255,255,.42);
+}
+.brand-text{font-size:clamp(13px,1.5vw,15px);font-weight:760;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand-sub{color:var(--subtle);font-size:12px;font-family:var(--mono);letter-spacing:.02em;margin-left:2px}
+.top-actions{display:flex;align-items:center;gap:8px}
+.icon-btn{
+  width:38px;height:38px;border-radius:999px;
+  display:grid;place-items:center;
+  color:var(--ink);
+  border:1px solid var(--hairline);
+  background:color-mix(in srgb, var(--glass) 70%, transparent);
+  transition:transform .22s var(--ease), background .22s var(--ease), border-color .22s var(--ease);
+}
+.icon-btn:hover{transform:translateY(-1px);background:color-mix(in srgb, var(--glass-strong) 88%, transparent);border-color:color-mix(in srgb, var(--blue) 38%, var(--hairline))}
+.icon-btn .sun{display:none}
+[data-theme="light"] .icon-btn .moon{display:none}
+[data-theme="light"] .icon-btn .sun{display:block}
+.progress-mini{width:74px;height:6px;border-radius:999px;background:color-mix(in srgb, var(--ink) 10%, transparent);overflow:hidden;margin-right:2px}
+.progress-mini span{display:block;width:16.66%;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--purple),var(--pink));transition:width .45s var(--ease)}
+
+/* Deck */
+.deck-shell{position:relative;z-index:1;width:100vw;height:100vh;overflow:hidden}
+.deck{
+  display:flex;
+  height:100%;
+  width:100%;
+  transform:translate3d(0,0,0);
+  transition:transform .82s var(--spring);
+  will-change:transform;
+}
+.slide{
+  position:relative;
+  width:100vw;
+  min-width:100vw;
+  height:100vh;
+  display:grid;
+  place-items:center;
+  padding:112px clamp(18px,5vw,72px) 112px;
+  opacity:.28;
+  transform:scale(.965) translateY(10px);
+  transition:opacity .58s var(--ease), transform .82s var(--spring), filter .58s var(--ease);
+  filter:blur(7px);
+}
+.slide.active{opacity:1;transform:scale(1) translateY(0);filter:blur(0)}
+.slide-inner{width:min(1120px,100%);margin:auto}
+.slide-center{text-align:center}.slide-center p{margin-inline:auto}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  margin-bottom:18px;
+  color:var(--blue);
+  font-family:var(--mono);
+  font-size:clamp(11px,1.4vw,12px);
+  font-weight:760;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+.eyebrow:before{content:"";width:7px;height:7px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));box-shadow:0 0 18px var(--blue)}
+h1,h2,h3{letter-spacing:-.055em;line-height:1.02;text-wrap:balance}
+h1{font-size:clamp(52px,9vw,116px);font-weight:820;margin-bottom:24px}
+h2{font-size:clamp(34px,5.5vw,72px);font-weight:800;margin-bottom:22px;max-width:980px}
+h3{font-size:clamp(19px,2.2vw,27px);font-weight:760;letter-spacing:-.035em;margin-bottom:10px}
+p{font-size:15px;color:var(--muted);max-width:700px}
+.lead{font-size:clamp(16px,2vw,20px);line-height:1.75;max-width:760px}
+.grad{
+  background:linear-gradient(100deg,var(--blue),var(--purple) 48%,var(--pink));
+  -webkit-background-clip:text;
+  background-clip:text;
+  -webkit-text-fill-color:transparent;
+  filter:drop-shadow(0 12px 34px color-mix(in srgb, var(--purple) 34%, transparent));
+}
+.hero-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:34px}
+.btn{
+  position:relative;
+  display:inline-flex;align-items:center;justify-content:center;gap:10px;
+  min-height:48px;
+  padding:0 18px;
+  border-radius:999px;
+  color:var(--ink);
+  background:var(--glass-strong);
+  border:1px solid var(--hairline);
+  box-shadow:var(--shadow-soft);
+  backdrop-filter:blur(20px) saturate(1.25);
+  -webkit-backdrop-filter:blur(20px) saturate(1.25);
+  font-size:14px;
+  font-weight:760;
+  letter-spacing:-.01em;
+  transition:transform .22s var(--ease), border-color .22s var(--ease), box-shadow .22s var(--ease);
+}
+.btn:hover{transform:translateY(-2px);border-color:color-mix(in srgb, var(--blue) 44%, var(--hairline));box-shadow:0 22px 70px color-mix(in srgb, var(--blue) 20%, transparent)}
+.btn-primary{background:linear-gradient(135deg,var(--blue),var(--purple) 58%,var(--pink));color:#fff;border-color:transparent}
+
+/* Glass cards with 1px inner highlight stroke */
+.glass,.metric,.flow-step,.check-card,.terminal{
+  position:relative;
+  border-radius:28px;
+  background:var(--glass);
+  box-shadow:var(--shadow);
+  backdrop-filter:blur(24px) saturate(1.35);
+  -webkit-backdrop-filter:blur(24px) saturate(1.35);
+  overflow:hidden;
+}
+.glass:before,.metric:before,.flow-step:before,.check-card:before,.terminal:before{
+  content:"";
+  position:absolute;
+  inset:0;
+  padding:1px;
+  border-radius:inherit;
+  background:linear-gradient(135deg,rgba(255,255,255,.62),rgba(255,255,255,.10) 35%,color-mix(in srgb, var(--blue) 32%, transparent) 55%,rgba(255,255,255,.08));
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite:exclude;
+  pointer-events:none;
+}
+.glass{padding:clamp(22px,3.2vw,34px);transition:transform .24s var(--ease), background .24s var(--ease), box-shadow .24s var(--ease)}
+.glass:hover{transform:translateY(-5px);background:var(--glass-strong);box-shadow:0 28px 90px color-mix(in srgb, var(--blue) 14%, rgba(0,0,0,.30))}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:36px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:36px}
+.card-icon{
+  width:42px;height:42px;border-radius:16px;
+  display:grid;place-items:center;
+  margin-bottom:20px;
+  color:#fff;
+  background:linear-gradient(135deg,var(--blue),var(--purple));
+  box-shadow:0 14px 38px color-mix(in srgb, var(--blue) 28%, transparent);
+}
+.metric-row{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:42px}
+.metric{padding:24px;border-radius:24px;text-align:left}
+.metric b{display:block;font-size:clamp(28px,4.6vw,54px);line-height:1;letter-spacing:-.06em;background:linear-gradient(100deg,var(--blue),var(--purple),var(--pink));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.metric span{display:block;margin-top:10px;color:var(--muted);font-size:13px}
+.check-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:34px}
+.check-card{display:flex;align-items:flex-start;gap:14px;padding:20px 20px;border-radius:22px;color:var(--muted)}
+.check-icon{width:24px;height:24px;border-radius:999px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,var(--blue),var(--purple));box-shadow:0 0 0 7px color-mix(in srgb, var(--blue) 12%, transparent);margin-top:1px;flex:0 0 auto}
+.flow{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:40px}
+.flow-step{padding:28px;border-radius:28px;min-height:210px;display:flex;flex-direction:column;justify-content:space-between}
+.flow-step strong{font-family:var(--mono);font-size:13px;color:var(--subtle)}
+.flow-step b{display:block;font-size:clamp(26px,3.5vw,42px);letter-spacing:-.055em;line-height:1.05;margin:18px 0 12px}
+.flow-step .arrow{align-self:flex-end;color:var(--blue);opacity:.88}
+.terminal{border-radius:24px;margin-top:30px;padding:18px;background:color-mix(in srgb, var(--glass-strong) 82%, #000 18%)}
+.terminal-top{display:flex;align-items:center;gap:8px;margin-bottom:16px;color:var(--subtle);font-family:var(--mono);font-size:12px}.terminal-dot{width:9px;height:9px;border-radius:999px;background:var(--hairline)}
+code,pre{font-family:var(--mono)}
+pre{white-space:pre-wrap;color:var(--muted);font-size:13px;line-height:1.8}.cmd{color:var(--blue)}
+
+/* Bottom controls */
+.bottombar{
+  position:fixed;
+  left:50%;bottom:22px;z-index:20;
+  transform:translateX(-50%);
+  width:min(720px, calc(100vw - 32px));
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:10px 12px;
+  border-radius:999px;
+  background:var(--glass-strong);
+  border:1px solid var(--hairline);
+  box-shadow:var(--shadow-soft);
+  backdrop-filter:blur(24px) saturate(1.35);
+  -webkit-backdrop-filter:blur(24px) saturate(1.35);
+}
+.dots{display:flex;align-items:center;gap:9px;padding:0 6px}
+.dot{
+  width:9px;height:9px;border-radius:999px;
+  background:color-mix(in srgb, var(--ink) 22%, transparent);
+  transition:width .32s var(--ease), transform .32s var(--ease), background .32s var(--ease), box-shadow .32s var(--ease);
+}
+.dot.active{width:32px;background:linear-gradient(90deg,var(--blue),var(--purple),var(--pink));box-shadow:0 0 28px color-mix(in srgb, var(--purple) 42%, transparent)}
+.kbd-hint{display:flex;align-items:center;gap:6px;color:var(--subtle);font-size:12px;white-space:nowrap}
+kbd{
+  min-width:26px;height:24px;padding:0 7px;
+  display:inline-flex;align-items:center;justify-content:center;
+  border-radius:7px;
+  color:var(--ink);
+  background:color-mix(in srgb, var(--ink) 7%, transparent);
+  border:1px solid var(--hairline);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 1px 0 rgba(0,0,0,.12);
+  font-family:var(--mono);font-size:11px;font-weight:700;
+}
+.slide-count{font-family:var(--mono);font-size:12px;color:var(--subtle);padding-right:6px}.slide-count b{color:var(--ink);font-weight:800}
+
+.reveal{opacity:0;transform:translateY(28px) scale(.985)}
+.slide.active .reveal{animation:revealIn .78s var(--spring) forwards}.slide.active .d1{animation-delay:.08s}.slide.active .d2{animation-delay:.16s}.slide.active .d3{animation-delay:.24s}.slide.active .d4{animation-delay:.32s}
+@keyframes revealIn{to{opacity:1;transform:none}}
+
+@media (max-width:900px){
+  .grid-2,.grid-3,.metric-row,.check-grid,.flow{grid-template-columns:1fr}
+  .slide{padding:98px 18px 98px;overflow-y:auto;align-items:start;place-items:start center}
+  .slide-inner{padding:18px 0 30px}
+  .topbar{top:12px}.bottombar{bottom:12px}
+  .brand-sub,.progress-mini{display:none}
+  .kbd-hint{display:none}
+  h1{font-size:clamp(48px,14vw,78px)}
+  h2{font-size:clamp(31px,9vw,54px)}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+  .deck{transition:none}.slide{filter:none}.reveal{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+<div class="mesh" aria-hidden="true"></div>
+
+<header class="topbar" aria-label="产品介绍页导航">
+  <a class="brand" href="#" data-go="0" aria-label="回到首页">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-text">嵌入式校招看板</span>
+    <span class="brand-sub">Feishu Radar</span>
+  </a>
+  <div class="top-actions">
+    <div class="progress-mini" aria-hidden="true"><span id="progressBar"></span></div>
+    <button class="icon-btn" id="themeToggle" type="button" aria-label="切换明暗主题">
+      <svg class="moon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.2 15.4A8.5 8.5 0 0 1 8.6 3.8 7.6 7.6 0 1 0 20.2 15.4Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg class="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 7.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6ZM12 2.5v2.1M12 19.4v2.1M4.6 4.6l1.5 1.5M17.9 17.9l1.5 1.5M2.5 12h2.1M19.4 12h2.1M4.6 19.4l1.5-1.5M17.9 6.1l1.5-1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="deck-shell" aria-live="polite">
+  <div class="deck" id="deck">
+    <section class="slide active" aria-label="封面">
+      <div class="slide-inner slide-center">
+        <div class="eyebrow reveal">Embedded Graduate Jobs · 2027</div>
+        <h1 class="reveal d1">把飞书投递表<br>升级成<span class="grad">进度驾驶舱</span></h1>
+        <p class="lead reveal d2">本地看板自动读取飞书多维表格，把投递漏斗、截止风险、公司画像和行动优先级压缩到一套可执行的全屏 Deck。</p>
+        <div class="hero-actions reveal d3">
+          <a class="btn btn-primary" href="#" data-go="3">三分钟启动<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+          <a class="btn" href="#" data-go="2">查看能力矩阵</a>
+        </div>
+        <div class="metric-row reveal d4" aria-label="产品关键指标">
+          <div class="metric"><b>60s</b><span>自动刷新飞书主表，追踪最新状态</span></div>
+          <div class="metric"><b>0</b><span>纯展示，不写飞书，数据全由你手动录入</span></div>
+          <div class="metric"><b>1</b><span>本地单入口，投递进度和截止风险统一看</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" aria-label="痛点">
+      <div class="slide-inner">
+        <div class="eyebrow reveal">Problem</div>
+        <h2 class="reveal d1">投递信息散在表格里，真正影响决策的信号却被埋住。</h2>
+        <p class="lead reveal d2">公司画像缺字段、截止时间分散、投递进度更新频繁。你需要的不是再维护一张表，而是一个随时能告诉你下一步做什么的指挥层。</p>
+        <div class="grid-2 reveal d3">
+          <article class="glass">
+            <div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6.5h16M4 12h10M4 17.5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
+            <h3>字段空缺影响筛选</h3>
+            <p>公司简介和岗位方向保持简洁一致，才能快速判断岗位是否值得继续跟进。</p>
+          </article>
+          <article class="glass">
+            <div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 19V5M5 19h14M9 16v-5M13 16V8M17 16v-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <h3>进度和风险不可见</h3>
+            <p>哪家快截止、哪家卡在机考、哪家等一面，如果只能靠人工扫表，就很容易错过最佳行动窗口。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" aria-label="看板能力">
+      <div class="slide-inner">
+        <div class="eyebrow reveal">Dashboard</div>
+        <h2 class="reveal d1">飞书是数据底座，<span class="grad">看板是指挥中心</span>。</h2>
+        <div class="grid-3 reveal d2">
+          <article class="glass"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><h3>投递漏斗</h3><p>从监控公司、已投递、机考、面试到 Offer，实时计算每个阶段的转化。</p></article>
+          <article class="glass"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3v3M17 3v3M4.5 9h15M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><h3>截止时间轴</h3><p>3 天内、7 天内、已过期自动分层，优先处理最紧急的机会。</p></article>
+          <article class="glass"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21s7-4.8 7-11a7 7 0 1 0-14 0c0 6.2 7 11 7 11Z" stroke="currentColor" stroke-width="2"/><path d="M12 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" stroke="currentColor" stroke-width="2"/></svg></div><h3>岗位方向</h3><p>统一按宽口径方向聚合展示，帮助快速调整投递组合。</p></article>
+          <article class="glass"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6.3 6.7M5.5 15a7 7 0 0 0 12.2 2.3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><h3>即时刷新</h3><p>飞书更新后立即同步；看板自动轮询最新数据，减少手动刷新成本。</p></article>
+          <article class="glass"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v18M5 8h14M5 16h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z" stroke="currentColor" stroke-width="2"/></svg></div><h3>双主题体验</h3><p>暗色深空、亮色清爽，一键切换并保存在本机浏览器。</p></article>
+          <article class="glass"><div class="card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><h3>只读你的数据</h3><p>看板只从飞书拉数据展示；所有内容由你在表格里手动维护，不自动修改。</p></article>
+        </div>
+      </div>
+    </section>
+    <section class="slide" aria-label="使用流程">
+      <div class="slide-inner">
+        <div class="eyebrow reveal">Workflow</div>
+        <h2 class="reveal d1">两步把飞书表变成<span class="grad">实时进度看板</span>。</h2>
+        <div class="flow reveal d2">
+          <article class="flow-step"><strong>STEP 01</strong><div><b>连接飞书</b><p>复制模板，配置 App ID、App Secret、App Token 与主表 ID。</p></div><svg class="arrow" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></article>
+          <article class="flow-step"><strong>STEP 02</strong><div><b>在飞书填数据</b><p>手动录入公司、投递链接、进展，所有内容由你维护。</p></div><svg class="arrow" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></article>
+          <article class="flow-step"><strong>STEP 03</strong><div><b>打开看板</b><p>启动本地服务，浏览器实时查看投递进度、漏斗和截止风险。</p></div><svg class="arrow" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" aria-label="本地启动">
+      <div class="slide-inner">
+        <div class="eyebrow reveal">Launch</div>
+        <h2 class="reveal d1">本地启动，<span class="grad">纯前端介绍页零依赖</span>。</h2>
+        <p class="lead reveal d2">产品页面是单文件 HTML；实际看板服务在本机运行，密钥和投递数据只流经你的电脑与飞书空间。</p>
+        <div class="terminal reveal d3" aria-label="启动命令示例">
+          <div class="terminal-top"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span>local dashboard</span></div>
+          <pre><span class="cmd">py -m uvicorn app.main:app --port 8765</span>
+open http://localhost:8765
+
+或双击 start-dashboard.bat 启动看板</pre>
+        </div>
+        <div class="hero-actions reveal d4">
+          <a class="btn btn-primary" href="#" data-go="0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 12H5M11 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>返回首页</a>
+          <button class="btn" type="button" id="copyCommand">复制启动命令</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer class="bottombar" aria-label="幻灯片控制">
+  <div class="dots" id="dots" aria-label="分页圆点"></div>
+  <div class="kbd-hint" aria-hidden="true"><kbd>Left</kbd><kbd>Right</kbd><kbd>Space</kbd><kbd>Home</kbd><kbd>End</kbd></div>
+  <div class="slide-count"><b id="currentNo">01</b><span id="totalNo"> / 06</span></div>
+</footer>
+
+<script>
+(function(){
+  var root = document.documentElement;
+  var deck = document.getElementById('deck');
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var dotsWrap = document.getElementById('dots');
+  var currentNo = document.getElementById('currentNo');
+  var totalNo = document.getElementById('totalNo');
+  var progressBar = document.getElementById('progressBar');
+  var themeToggle = document.getElementById('themeToggle');
+  var copyCommand = document.getElementById('copyCommand');
+  var index = 0;
+  var wheelLock = false;
+  var touchX = 0;
+  var touchY = 0;
+  var total = slides.length;
+
+  function pad(n){ return String(n).padStart(2,'0'); }
+
+  function setTheme(theme){
+    root.setAttribute('data-theme', theme);
+    try{ localStorage.setItem('intro-theme', theme); }catch(e){}
+  }
+
+  function getInitialTheme(){
+    try{
+      var saved = localStorage.getItem('intro-theme');
+      if(saved === 'dark' || saved === 'light') return saved;
+    }catch(e){}
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
+  function renderDots(){
+    dotsWrap.innerHTML = '';
+    slides.forEach(function(_, i){
+      var btn = document.createElement('button');
+      btn.className = 'dot' + (i === index ? ' active' : '');
+      btn.type = 'button';
+      btn.setAttribute('aria-label', '跳转到第 ' + (i + 1) + ' 页');
+      btn.addEventListener('click', function(){ go(i); });
+      dotsWrap.appendChild(btn);
+    });
+    totalNo.textContent = ' / ' + pad(total);
+  }
+
+  function go(next){
+    var target = Math.max(0, Math.min(total - 1, next));
+    if(target === index && deck.style.transform) return;
+    index = target;
+    deck.style.transform = 'translate3d(' + (-index * 100) + 'vw,0,0)';
+    slides.forEach(function(slide, i){
+      var active = i === index;
+      slide.classList.toggle('active', active);
+      slide.setAttribute('aria-hidden', active ? 'false' : 'true');
+    });
+    Array.prototype.forEach.call(dotsWrap.children, function(dot, i){ dot.classList.toggle('active', i === index); });
+    currentNo.textContent = pad(index + 1);
+    progressBar.style.width = ((index + 1) / total * 100) + '%';
+    history.replaceState(null, '', '#slide-' + (index + 1));
+  }
+
+  function next(){ go(index + 1); }
+  function prev(){ go(index - 1); }
+
+  setTheme(getInitialTheme());
+  renderDots();
+
+  var hash = window.location.hash.match(/slide-(\d+)/);
+  if(hash) index = Math.max(0, Math.min(total - 1, parseInt(hash[1], 10) - 1));
+  go(index);
+
+  themeToggle.addEventListener('click', function(){
+    setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+
+  document.addEventListener('click', function(event){
+    var trigger = event.target.closest('[data-go]');
+    if(!trigger) return;
+    event.preventDefault();
+    go(parseInt(trigger.getAttribute('data-go'), 10));
+  });
+
+  document.addEventListener('keydown', function(event){
+    var tag = (event.target && event.target.tagName || '').toLowerCase();
+    if(tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if(event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' '){ event.preventDefault(); next(); }
+    if(event.key === 'ArrowLeft' || event.key === 'PageUp'){ event.preventDefault(); prev(); }
+    if(event.key === 'Home'){ event.preventDefault(); go(0); }
+    if(event.key === 'End'){ event.preventDefault(); go(total - 1); }
+  });
+
+  window.addEventListener('wheel', function(event){
+    if(Math.abs(event.deltaY) < 26 || wheelLock) return;
+    wheelLock = true;
+    event.deltaY > 0 ? next() : prev();
+    window.setTimeout(function(){ wheelLock = false; }, 760);
+  }, {passive:true});
+
+  window.addEventListener('touchstart', function(event){
+    if(!event.touches || !event.touches.length) return;
+    touchX = event.touches[0].clientX;
+    touchY = event.touches[0].clientY;
+  }, {passive:true});
+
+  window.addEventListener('touchend', function(event){
+    if(!event.changedTouches || !event.changedTouches.length) return;
+    var dx = event.changedTouches[0].clientX - touchX;
+    var dy = event.changedTouches[0].clientY - touchY;
+    if(Math.abs(dx) > 54 && Math.abs(dx) > Math.abs(dy)) dx < 0 ? next() : prev();
+  }, {passive:true});
+
+  if(copyCommand){
+    copyCommand.addEventListener('click', function(){
+      var text = 'py -m uvicorn app.main:app --port 8765';
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){
+          copyCommand.textContent = '已复制';
+          window.setTimeout(function(){ copyCommand.textContent = '复制启动命令'; }, 1200);
+        });
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>

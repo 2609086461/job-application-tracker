@@ -1,0 +1,26 @@
+# User configuration and credentials
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+
+# Private business data (keep only placeholder files)
+/业务数据/**
+!/业务数据/**/
+!/业务数据/**/.gitkeep
+/历史备份/**
+!/历史备份/**/
+!/历史备份/**/.gitkeep
+
+# Runtime and local environments
+**/.venv/
+**/__pycache__/
+*.pyc
+*.log
+*.lnk
+*.url
+**/运行日志/
+.DS_Store
+.idea/
+.vscode/

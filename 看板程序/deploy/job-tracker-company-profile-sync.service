@@ -1,0 +1,32 @@
+[Unit]
+Description=Generate cached public company profiles for active recruitment tasks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobtracker
+Group=jobtracker
+WorkingDirectory=/opt/job-tracker/current
+EnvironmentFile=-/etc/job-tracker/feishu.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=Asia/Shanghai
+Environment=JOB_TRACKER_DATA_DIR=/var/lib/job-tracker/data
+Environment=JOB_TRACKER_BACKUP_DIR=/var/lib/job-tracker/backups
+Environment=JOB_TRACKER_ENV_PATH=/etc/job-tracker/feishu.env
+Environment=CODEX_HOME=/var/lib/job-tracker/codex
+Environment=COMPANY_PROFILE_MODEL=gpt-5.6-luna
+Environment=COMPANY_PROFILE_CODEX_BIN=/usr/local/bin/codex
+# A bulk backfill may be running.  Avoid two writers racing on the JSON cache;
+# the next timer tick will retry if this non-blocking lock is already held.
+ExecStart=/usr/bin/flock -n /var/lib/job-tracker/data/同步记录/company_profiles.lock /opt/job-tracker/venv/bin/python -m tools.company_profiles --limit 1
+TimeoutStartSec=3min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/job-tracker
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=768M

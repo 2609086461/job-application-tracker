@@ -1,0 +1,30 @@
+[Unit]
+Description=Personal job application dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobtracker
+Group=jobtracker
+WorkingDirectory=/opt/job-tracker/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TZ=Asia/Shanghai
+Environment=JOB_TRACKER_DATA_DIR=/var/lib/job-tracker/data
+Environment=JOB_TRACKER_BACKUP_DIR=/var/lib/job-tracker/backups
+Environment=JOB_TRACKER_ENV_PATH=/etc/job-tracker/feishu.env
+ExecStart=/opt/job-tracker/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/job-tracker
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Synchronize job deadlines to Feishu Calendar twice daily
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Shanghai
+OnCalendar=*-*-* 12:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=60
+Unit=job-tracker-calendar-sync.service
+
+[Install]
+WantedBy=timers.target
