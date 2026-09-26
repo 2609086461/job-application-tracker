@@ -62,6 +62,7 @@ Copy-Item .env.example .env
 - `业务数据/`：每个用户自己的投递与邮件数据，只保留空目录结构。
 - `常用入口/`：Windows 常用启动器。
 - `AI_SETUP.md`：供编码代理执行的配置流程。
+- `INTEGRATION_SETUP.md`：机器人与秋招看板的联合配置和更新指南。
 - `AGENTS.md`：编码代理必须遵守的数据与操作边界。
 - `UPDATES.md`：版本更新和个人数据保留策略。
 
