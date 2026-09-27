@@ -54,7 +54,11 @@
 
 ## 首次启动
 
-进入 `看板程序`，创建虚拟环境并安装依赖。
+Windows 优先从仓库根目录运行 `scripts/setup-windows.ps1 -StartDashboard`，Linux / macOS
+优先运行 `scripts/setup-linux.sh`。两个入口都会创建隔离环境、安装依赖、补齐空目录、运行
+离线测试和 `python -m tools.doctor`，但不会自动读取邮箱或写入飞书。
+
+需要人工执行时，再进入 `看板程序` 创建虚拟环境并安装依赖。
 
 Linux / macOS：
 
@@ -166,3 +170,7 @@ journalctl -u job-tracker-company-profile-sync.service
 授权码或写入飞书时再让我介入。不要显示或提交任何密钥、邮件、投递记录和面试资料；
 所有写入先预览并等我确认。最后说明本地看板、邮件增量同步和已启用定时器的验收结果。
 ```
+
+如果用户还要连接 Codex 飞书机器人、录音转写或面经归档，再读取
+`docs/CODEX_BOT_INTEGRATION.md` 和对应 `.agents/skills/`。这些是可选集成；不要把安装
+机器人当作启动看板的前置条件。

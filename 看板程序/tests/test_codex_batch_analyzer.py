@@ -71,10 +71,10 @@ class CodexBatchAnalyzerTests(unittest.TestCase):
 
         self.assertEqual(
             [(model, effort) for _, model, effort in calls],
-            [("gpt-5.6-luna", "low"), ("gpt-5.6-terra", "medium")],
+            [(None, "low"), (None, "medium")],
         )
         self.assertEqual(result["100:10"]["company"], "腾讯")
-        self.assertEqual(result["100:10"]["analysis_model"], "gpt-5.6-terra")
+        self.assertEqual(result["100:10"]["analysis_model"], "account-default")
 
     def test_gpt6_is_rejected_even_when_configured(self):
         with patch.dict("os.environ", {"MAIL_CODEX_FAST_MODEL": "gpt-6-astra"}, clear=False):
@@ -82,6 +82,15 @@ class CodexBatchAnalyzerTests(unittest.TestCase):
                 codex_batch_analyzer.resolve_model(
                     "MAIL_CODEX_FAST_MODEL", codex_batch_analyzer.DEFAULT_FAST_MODEL
                 )
+
+    def test_explicit_current_model_is_passed_through(self):
+        with patch.dict("os.environ", {"MAIL_CODEX_FAST_MODEL": "gpt-current-fast"}, clear=False):
+            self.assertEqual(
+                codex_batch_analyzer.resolve_model(
+                    "MAIL_CODEX_FAST_MODEL", codex_batch_analyzer.DEFAULT_FAST_MODEL
+                ),
+                "gpt-current-fast",
+            )
 
     def test_codex_outage_defers_batch_by_default(self):
         messages = []

@@ -14,6 +14,7 @@ QQ 邮箱。
 - 招聘邮件只读同步、分类、归档与任务匹配。
 - 飞书多维表格、任务和截止日历同步。
 - 公司简介缓存和面试复盘入口。
+- 可选的飞书录音转写、逐题复盘与面经索引工作流（需单独配置语音识别和飞书机器人）。
 - 本地 Windows 入口，以及可选的 Linux systemd 服务模板。
 
 ## 最快开始
@@ -27,6 +28,17 @@ QQ 邮箱。
 ```
 
 日常操作说明见 [USER_GUIDE.md](USER_GUIDE.md)。
+
+Windows 用户也可以直接双击 `常用入口/首次安装与检查.bat`。它会创建独立 Python
+环境、安装依赖、创建空白私有目录、运行离线测试与安装自检，并启动本地看板；不会读取
+邮箱或写入飞书。安装后可在 `看板程序` 运行下面的命令重复检查：
+
+```powershell
+& .\.venv\Scripts\python.exe -m tools.doctor
+```
+
+Linux / macOS 可以运行 `./scripts/setup-linux.sh`。首次安装通过后，再让 Codex 按
+`AI_SETUP.md` 分别配置飞书和 QQ 邮箱，不要在第一步同时引入所有外部权限。
 
 人工安装时，在 `看板程序` 目录执行：
 
@@ -67,6 +79,7 @@ Copy-Item .env.example .env
 - `USER_GUIDE.md`：给最终用户看的看板、邮件、飞书和更新手册。
 - `AGENTS.md`：编码代理必须遵守的数据与操作边界。
 - `UPDATES.md`：版本更新和个人数据保留策略。
+- `docs/CODEX_BOT_INTEGRATION.md`：可选的录音转写、面经归档与机器人联动流程。
 
 ## 更新
 

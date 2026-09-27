@@ -23,9 +23,8 @@ from tools.mail.llm_analyzer import (
 from tools.mail.mail_pipeline import analyze_message
 
 
-DEFAULT_FAST_MODEL = "gpt-5.6-luna"
-DEFAULT_REVIEW_MODEL = "gpt-5.6-terra"
-ALLOWED_MODELS = frozenset({"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"})
+DEFAULT_FAST_MODEL = "auto"
+DEFAULT_REVIEW_MODEL = "auto"
 DEFAULT_TIMEOUT_SECONDS = 300
 DEFAULT_MAX_BATCH_ITEMS = 25
 
@@ -81,12 +80,13 @@ def _positive_int_env(name: str, default: int) -> int:
     return value
 
 
-def resolve_model(name: str, default: str) -> str:
+def resolve_model(name: str, default: str) -> str | None:
     model = os.environ.get(name, default).strip() or default
-    if model not in ALLOWED_MODELS:
+    if model.lower() == "auto":
+        return None
+    if "gpt-6" in model.lower() or "astra" in model.lower():
         raise CodexAnalysisError(
-            f"{name}={model} 不在邮件任务允许模型中；已硬性禁止 GPT-6，"
-            f"只允许 {', '.join(sorted(ALLOWED_MODELS))}。"
+            f"{name}={model} 不适合后台邮件分类；已硬性禁止 GPT-6/Astra。"
         )
     return model
 
@@ -128,7 +128,7 @@ def _chunks(items: list[dict], size: int):
 def _run_codex_chunk(
     items: list[dict],
     *,
-    model: str,
+    model: str | None,
     effort: str,
     prompt: str,
     codex_bin: str,
@@ -143,8 +143,7 @@ def _run_codex_chunk(
             json.dumps(BATCH_OUTPUT_SCHEMA, ensure_ascii=False),
             encoding="utf-8",
         )
-        completed = subprocess.run(
-            [
+        command = [
                 codex_bin,
                 "exec",
                 "--ephemeral",
@@ -153,8 +152,6 @@ def _run_codex_chunk(
                 "--skip-git-repo-check",
                 "--sandbox",
                 "read-only",
-                "--model",
-                model,
                 "--config",
                 f'model_reasoning_effort="{effort}"',
                 "--cd",
@@ -164,7 +161,12 @@ def _run_codex_chunk(
                 "--output-last-message",
                 str(result_path),
                 prompt,
-            ],
+            ]
+        if model:
+            command[command.index("--config"):command.index("--config")] = ["--model", model]
+        model_label = model or "account-default"
+        completed = subprocess.run(
+            command,
             input=json.dumps({"emails": items}, ensure_ascii=False),
             check=False,
             capture_output=True,
@@ -174,30 +176,30 @@ def _run_codex_chunk(
         )
         if completed.returncode:
             raise CodexAnalysisError(
-                f"Codex {model}/{effort} 批处理失败（退出码 {completed.returncode}）。"
+                f"Codex {model_label}/{effort} 批处理失败（退出码 {completed.returncode}）。"
             )
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise CodexAnalysisError(f"Codex {model} 未返回有效的结构化结果。") from exc
+            raise CodexAnalysisError(f"Codex {model_label} 未返回有效的结构化结果。") from exc
 
     decisions = payload.get("decisions") if isinstance(payload, dict) else None
     if not isinstance(decisions, list):
-        raise CodexAnalysisError(f"Codex {model} 的结果缺少 decisions 数组。")
+        raise CodexAnalysisError(f"Codex {model_label} 的结果缺少 decisions 数组。")
     by_key = {
         item.get("mail_key"): item
         for item in decisions
         if isinstance(item, dict) and isinstance(item.get("mail_key"), str)
     }
     if len(by_key) != len(decisions) or set(by_key) != set(expected_keys):
-        raise CodexAnalysisError(f"Codex {model} 返回的 mail_key 与输入批次不一致。")
+        raise CodexAnalysisError(f"Codex {model_label} 返回的 mail_key 与输入批次不一致。")
     return by_key
 
 
 def _run_codex_batches(
     items: list[dict],
     *,
-    model: str,
+    model: str | None,
     effort: str,
     prompt: str,
     codex_bin: str,
@@ -303,7 +305,7 @@ def analyze_records_with_codex(records: list[dict]) -> dict[str, dict | None]:
             record["uidvalidity"],
             decisions[mail_key],
             provider="codex_cli",
-            model=(review_model if mail_key in reviewed_keys else fast_model),
+            model=(review_model if mail_key in reviewed_keys else fast_model) or "account-default",
         )
     return output
 
