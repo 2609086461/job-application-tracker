@@ -8,12 +8,15 @@ from tools.feishu.sync_recruitment_tasks import (
     apply_candidates,
     cleanup_duplicate_calendar_events,
     collect_candidates,
+    collect_missing_candidates,
     ensure_status_source_field,
     main as sync_task_main,
     reconcile_completion,
     resolve_expired_task,
     resolve_task,
+    set_task_priority,
     set_task_status,
+    task_priority,
 )
 
 
@@ -68,6 +71,107 @@ class RecruitmentTaskTests(unittest.TestCase):
         ], [], self.now)[0]
 
         self.assertEqual(item.source_key, "100:42")
+
+    def test_task_key_is_stable_when_a_reminder_changes_the_subject(self):
+        first = collect_candidates([{
+            "company": "汇顶科技", "job": "嵌入式软件工程师", "event": "笔试/机考",
+            "action": "完成在线笔试", "deadline": "2026-09-16T23:59:00+08:00",
+            "subject": "在线笔试邀请", "mail_key": "100:1",
+        }], [], self.now)[0]
+        reminder = collect_candidates([{
+            "company": "汇顶科技", "job": "嵌入式软件工程师", "event": "笔试/机考",
+            "action": "完成在线笔试", "deadline": "2026-09-16T23:59:00+08:00",
+            "subject": "在线笔试提醒", "mail_key": "100:2",
+        }], [], self.now)[0]
+
+        self.assertEqual(first.key, reminder.key)
+        self.assertNotEqual(first.source_key, reminder.source_key)
+
+    def test_a_new_interview_round_or_session_has_a_distinct_task_key(self):
+        first = collect_candidates([{
+            "company": "示例公司", "event": "一面", "subject": "一面邀请",
+            "deadline": "2026-09-16T14:00:00+08:00",
+        }], [], self.now)[0]
+        second_round = collect_candidates([{
+            "company": "示例公司", "event": "二面", "subject": "二面邀请",
+            "deadline": "2026-09-16T14:00:00+08:00",
+        }], [], self.now)[0]
+        new_session = collect_candidates([{
+            "company": "示例公司", "event": "一面", "subject": "重新安排一面",
+            "deadline": "2026-09-20T14:00:00+08:00",
+        }], [], self.now)[0]
+
+        self.assertNotEqual(first.key, second_round.key)
+        self.assertNotEqual(first.key, new_session.key)
+
+    def test_result_notification_does_not_create_an_action_task(self):
+        items = collect_candidates([{
+            "company": "未岚大陆（Willand）", "job": "嵌入式软件工程师",
+            "event": "笔试/机考", "action": "查看笔试结果",
+            "subject": "笔试结果通知", "mail_key": "100:2121",
+        }], [], self.now)
+
+        self.assertEqual(items, [])
+
+    def test_interview_feedback_request_does_not_create_a_new_interview_task(self):
+        items = collect_candidates([{
+            "company": "星宸科技", "event": "面试", "action": "填写面试反馈问卷",
+            "subject": "诚邀您对面试给予反馈", "mail_key": "100:feedback",
+        }], [], self.now)
+
+        self.assertEqual(items, [])
+
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.list_records", return_value=[])
+    @patch("tools.feishu.sync_recruitment_tasks.mail_store.get_dashboard_data")
+    @patch("tools.feishu.sync_recruitment_tasks.dashboard_data")
+    def test_missing_task_repair_only_collects_unlinked_mail(
+        self, dashboard, mail_dashboard, _records,
+    ):
+        dashboard.return_value = {"items": []}
+        mail_dashboard.return_value = {"items": [
+            {
+                "company": "华为", "event": "面试", "action": "参加面试",
+                "subject": "面试通知", "mail_key": "new:1", "task_record_id": "",
+            },
+            {
+                "company": "TCL实业", "event": "面试", "action": "参加面试",
+                "subject": "面试通知", "mail_key": "old:1", "task_record_id": "rec1",
+            },
+        ]}
+
+        items = collect_missing_candidates(self.now)
+
+        self.assertEqual([item.company for item in items], ["华为"])
+
+    def test_event_priority_defaults_to_interview_then_written_exam_then_assessment(self):
+        self.assertLess(task_priority("一面")["priority_rank"], task_priority("笔试/机考")["priority_rank"])
+        self.assertLess(task_priority("笔试/机考")["priority_rank"], task_priority("测评")["priority_rank"])
+        self.assertEqual(task_priority("测评", "高")["priority_source"], "manual")
+        self.assertEqual(task_priority("测评", "高")["priority_rank"], 0)
+
+    @patch("tools.feishu.sync_recruitment_tasks.find_task_table", return_value="task-table")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_task_tracking_fields")
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.update_record")
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.list_records")
+    def test_dashboard_can_set_and_clear_manual_priority(
+        self, list_records, update_record, _ensure_fields, _find_task_table,
+    ):
+        list_records.return_value = [{
+            "record_id": "rec1", "fields": {"事项类型": "测评", "任务键": "mail:1"},
+        }]
+
+        changed = set_task_priority("rec1", "高")
+
+        self.assertEqual(changed["manual_priority"], "高")
+        self.assertEqual(changed["priority_rank"], 0)
+        update_record.assert_called_once_with(
+            "rec1", {"手动优先级": "高"}, table_id="task-table",
+        )
+        self.assertEqual(set_task_priority("rec1", "")["priority"], "低")
+
+    def test_invalid_manual_priority_is_rejected(self):
+        with self.assertRaises(ValueError):
+            set_task_priority("rec1", "最高")
 
     @patch("tools.feishu.sync_recruitment_tasks.apply_candidates")
     @patch("tools.feishu.sync_recruitment_tasks.feishu.list_records", return_value=[])
@@ -140,6 +244,79 @@ class RecruitmentTaskTests(unittest.TestCase):
             table_id="task-table",
         )
 
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.update_record")
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.create_task")
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.get_task", return_value={"guid": "task1"})
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.list_records")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_tasklist")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_task_tracking_fields")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_task_table", return_value="task-table")
+    def test_apply_reuses_one_pending_interview_when_mail_key_changes(
+        self, _ensure_table, _ensure_fields, ensure_tasklist, list_records,
+        _get_task, create_task, update_record,
+    ):
+        item = collect_candidates([{
+            "company": "迈瑞",
+            "event": "面试已预约",
+            "action": "参加面试",
+            "subject": "新的面试安排",
+            "mail_key": "new:2",
+        }], [], self.now)[0]
+        ensure_tasklist.return_value = {"guid": "list-guid", "url": "list-url"}
+        list_records.return_value = [{
+            "record_id": "rec1",
+            "fields": {
+                "任务键": "mail:old-key",
+                "公司": "迈瑞医疗",
+                "事项类型": "一面",
+                "飞书任务GUID": "task1",
+                "来源键": "old:1",
+                "状态": "待完成",
+            },
+        }]
+
+        result = apply_candidates([item], "owner-id")
+
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["skipped"], 1)
+        create_task.assert_not_called()
+        update_record.assert_not_called()
+
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.update_record")
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.create_task")
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.get_task", return_value={"completed_at": 123456})
+    @patch("tools.feishu.sync_recruitment_tasks.feishu.list_records")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_tasklist")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_task_tracking_fields")
+    @patch("tools.feishu.sync_recruitment_tasks.ensure_task_table", return_value="task-table")
+    def test_apply_reuses_completed_task_for_same_company_job_and_session(
+        self, _ensure_table, _ensure_fields, ensure_tasklist, list_records,
+        _get_task, create_task, update_record,
+    ):
+        item = collect_candidates([{
+            "company": "汇顶科技", "job": "嵌入式软件工程师", "event": "笔试/机考",
+            "action": "完成在线笔试", "deadline": "2026-09-16T23:59:00+08:00",
+            "subject": "笔试提醒", "mail_key": "new:2",
+        }], [], self.now)[0]
+        ensure_tasklist.return_value = {"guid": "list-guid", "url": "list-url"}
+        list_records.return_value = [{
+            "record_id": "rec1",
+            "fields": {
+                "任务键": "mail:legacy-subject-hash", "公司": "汇顶科技",
+                "岗位": "嵌入式软件工程师", "事项类型": "笔试/机考",
+                "截止时间": int(datetime(2026, 9, 16, 23, 59, tzinfo=SHANGHAI).timestamp() * 1000),
+                "飞书任务GUID": "task1", "来源键": "old:1", "状态": "已完成",
+                "完成时间": 123456,
+            },
+        }]
+
+        result = apply_candidates([item], "owner-id")
+
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["skipped"], 1)
+        create_task.assert_not_called()
+        update_record.assert_not_called()
+
     def test_material_is_planned_six_hours_early(self):
         items = collect_candidates([
             {
@@ -163,6 +340,84 @@ class RecruitmentTaskTests(unittest.TestCase):
         payload = _task_payload(item, "list-guid", "owner-id")
         self.assertEqual(payload["reminders"], [{"relative_fire_minute": 180}])
         self.assertIsNone(item.planned_at)
+
+    def test_apply_reserves_ledger_before_task_and_keeps_it_when_calendar_fails(self):
+        item = collect_candidates([{
+            "company": "诺瓦星云",
+            "event": "补充材料",
+            "action": "完善简历信息",
+            "deadline": "2026-09-21T00:00:00+08:00",
+            "subject": "邀请您更新简历",
+        }], [], self.now)[0]
+        order = []
+
+        with (
+            patch("tools.feishu.sync_recruitment_tasks.ensure_task_table", return_value="task-table"),
+            patch("tools.feishu.sync_recruitment_tasks.ensure_task_tracking_fields"),
+            patch(
+                "tools.feishu.sync_recruitment_tasks.ensure_tasklist",
+                return_value={"guid": "list-guid", "url": "list-url"},
+            ),
+            patch("tools.feishu.sync_recruitment_tasks.feishu.list_records", return_value=[]),
+            patch("tools.feishu.sync_recruitment_tasks.feishu.create_record") as create_record,
+            patch("tools.feishu.sync_recruitment_tasks.feishu.create_task") as create_task,
+            patch("tools.feishu.sync_recruitment_tasks.feishu.update_record") as update_record,
+            patch(
+                "tools.feishu.sync_recruitment_tasks.feishu.get_primary_calendar",
+                side_effect=RuntimeError("app bot_id not found"),
+            ),
+        ):
+            create_record.side_effect = lambda *args, **kwargs: (
+                order.append("ledger") or {"record_id": "rec-new"}
+            )
+            create_task.side_effect = lambda *args, **kwargs: (
+                order.append("task") or {"guid": "task-new", "url": "task-url"}
+            )
+
+            result = apply_candidates([item], "owner-id")
+
+        self.assertEqual(order, ["ledger", "task"])
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["calendar_failed"], 1)
+        update_record.assert_called_once_with(
+            "rec-new",
+            {
+                "飞书任务GUID": "task-new",
+                "状态来源": "双向同步",
+                "飞书任务链接": {"link": "task-url", "text": "打开任务"},
+            },
+            table_id="task-table",
+        )
+
+    def test_apply_keeps_reserved_ledger_when_native_task_creation_fails(self):
+        item = collect_candidates([{
+            "company": "诺瓦星云",
+            "event": "补充材料",
+            "action": "完善简历信息",
+            "subject": "邀请您更新简历",
+        }], [], self.now)[0]
+
+        with (
+            patch("tools.feishu.sync_recruitment_tasks.ensure_task_table", return_value="task-table"),
+            patch("tools.feishu.sync_recruitment_tasks.ensure_task_tracking_fields"),
+            patch(
+                "tools.feishu.sync_recruitment_tasks.ensure_tasklist",
+                return_value={"guid": "list-guid", "url": "list-url"},
+            ),
+            patch("tools.feishu.sync_recruitment_tasks.feishu.list_records", return_value=[]),
+            patch(
+                "tools.feishu.sync_recruitment_tasks.feishu.create_record",
+                return_value={"record_id": "rec-new"},
+            ) as create_record,
+            patch(
+                "tools.feishu.sync_recruitment_tasks.feishu.create_task",
+                side_effect=RuntimeError("task API unavailable"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "task API unavailable"):
+                apply_candidates([item], "owner-id")
+
+        create_record.assert_called_once()
 
     @patch("tools.feishu.sync_recruitment_tasks.feishu.update_record")
     @patch("tools.feishu.sync_recruitment_tasks.feishu.get_task", side_effect=RuntimeError("unauthorized"))

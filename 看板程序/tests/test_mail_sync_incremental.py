@@ -66,7 +66,26 @@ class IncrementalMailSyncTests(unittest.TestCase):
                 ("tools.mail.analyze_recruitment_mail",),
                 ("tools.feishu.match_feishu_mail_preview",),
                 ("tools.feishu.apply_feishu_mail_updates", "--confirm", "--new-only"),
-                ("tools.feishu.sync_recruitment_tasks", "--apply", "--mail-key", "123:456"),
+                ("tools.feishu.sync_recruitment_tasks", "--apply", "--missing-only"),
+            ],
+        )
+
+    def test_scheduled_apply_retries_missing_tasks_without_new_mail(self):
+        with patch.object(scheduled_sync, "use_shanghai_timezone"), \
+             patch.object(scheduled_sync, "run_module") as run_module, \
+             patch.object(
+                 scheduled_sync,
+                 "load_json",
+                 return_value={"last_run": {"scanned": 0, "archived": 0}},
+             ), \
+             patch("sys.argv", ["scheduled_sync", "--apply"]):
+            self.assertEqual(scheduled_sync.main(), 0)
+
+        self.assertEqual(
+            [call.args for call in run_module.call_args_list],
+            [
+                ("tools.mail.sync_recruitment_mail", "--codex"),
+                ("tools.feishu.sync_recruitment_tasks", "--apply", "--missing-only"),
             ],
         )
 

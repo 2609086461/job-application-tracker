@@ -62,24 +62,94 @@ def _mail_body(text: str) -> str:
 def _mail_reference(company, source, source_key="") -> tuple[str, str]:
     if source_key:
         return "mail_key", str(source_key).strip()
+    return _fallback_mail_reference(company, source)
+
+
+def _fallback_mail_reference(company, source) -> tuple[str, str]:
     return company_key(company), str(source or "").strip()
+
+
+def _event_family(event) -> str:
+    value = str(event or "").strip()
+    if "面试" in value or value in {"一面", "二面", "三面", "终面", "主管面", "HR面"}:
+        return "面试"
+    if "笔试" in value or "机考" in value:
+        return "笔试/机考"
+    return value
+
+
+def _semantic_reference(company, event) -> tuple[str, str]:
+    return "semantic", f"{company_key(company)}|{_event_family(event)}"
 
 
 def completed_mail_references(task_items: list[dict]) -> set[tuple[str, str]]:
     """Return mail references whose linked recruitment task is complete."""
-    return {
-        _mail_reference(item.get("company"), item.get("source"), item.get("source_key"))
-        for item in task_items
-        if item.get("status") == "已完成" and item.get("source")
-    }
+    result: set[tuple[str, str]] = set()
+    for item in task_items:
+        if item.get("status") != "已完成" or not item.get("source"):
+            continue
+        result.add(_mail_reference(
+            item.get("company"), item.get("source"), item.get("source_key")
+        ))
+        # Older or manually repaired ledgers may not carry the mailbox key.
+        # Keep the exact company+subject identity as a safe fallback.
+        result.add(_fallback_mail_reference(item.get("company"), item.get("source")))
+    return result
 
 
 def mail_task_records(task_items: list[dict]) -> dict[tuple[str, str], dict]:
-    """Index linked task state by stable mail reference for dashboard actions."""
+    """Index tasks by exact mail and by one unambiguous pending semantic match."""
+    result: dict[tuple[str, str], dict] = {}
+    pending_semantic: dict[tuple[str, str], list[dict]] = {}
+    for item in task_items:
+        if item.get("source"):
+            result[_mail_reference(
+                item.get("company"), item.get("source"), item.get("source_key")
+            )] = item
+            result[_fallback_mail_reference(item.get("company"), item.get("source"))] = item
+        if item.get("status") != "已完成":
+            key = _semantic_reference(item.get("company"), item.get("event"))
+            pending_semantic.setdefault(key, []).append(item)
+    for key, candidates in pending_semantic.items():
+        record_ids = {str(item.get("record_id") or "") for item in candidates}
+        if len(candidates) == 1 and "" not in record_ids:
+            result[key] = candidates[0]
+    return result
+
+
+def _task_for_mail(row: dict, task_records: dict[tuple[str, str], dict]) -> dict:
+    exact = _mail_reference(
+        row.get("company"),
+        row.get("subject") or row.get("archive_text") or row.get("event"),
+        row.get("mail_key"),
+    )
+    return task_records.get(exact) or task_records.get(
+        _fallback_mail_reference(
+            row.get("company"),
+            row.get("subject") or row.get("archive_text") or row.get("event"),
+        )
+    ) or task_records.get(
+        _semantic_reference(row.get("company"), row.get("event"))
+    ) or {}
+
+
+def _dashboard_mail_item(row: dict, task_records: dict[tuple[str, str], dict]) -> dict:
+    task = _task_for_mail(row, task_records)
     return {
-        _mail_reference(item.get("company"), item.get("source"), item.get("source_key")): item
-        for item in task_items
-        if item.get("source")
+        "company": row.get("company"),
+        "job": row.get("job"),
+        "event": row.get("event"),
+        "urgency": row.get("urgency"),
+        "urgency_note": row.get("urgency_note"),
+        "mail_time": row.get("received_at"),
+        "deadline": row.get("deadline"),
+        "action": row.get("action"),
+        "subject": row.get("subject"),
+        "archive_path": row.get("archive_text"),
+        "action_url": row.get("action_url"),
+        "mail_key": row.get("mail_key"),
+        "task_record_id": str(task.get("record_id") or ""),
+        "resolution": str(task.get("resolution") or ""),
     }
 
 
@@ -98,11 +168,17 @@ def _current_mail_dashboard(
     active = [
         row for row in actionable
         if row.get("urgency") != "已结束"
-        and _mail_reference(
-            row.get("company"),
-            row.get("subject") or row.get("archive_text") or row.get("event"),
-            row.get("mail_key"),
-        ) not in handled_references
+        and all(reference not in handled_references for reference in (
+            _mail_reference(
+                row.get("company"),
+                row.get("subject") or row.get("archive_text") or row.get("event"),
+                row.get("mail_key"),
+            ),
+            _fallback_mail_reference(
+                row.get("company"),
+                row.get("subject") or row.get("archive_text") or row.get("event"),
+            ),
+        ))
     ]
     active.sort(key=lambda row: (row.get("urgency_rank", 99), row.get("deadline") or "9999"))
     return {
@@ -110,33 +186,7 @@ def _current_mail_dashboard(
         "archived_count": len(rows),
         "action_count": len(active),
         "urgent_count": sum(row.get("urgency") in ("紧急", "优先", "已过期") for row in active),
-        "items": [
-            {
-                "company": row.get("company"),
-                "job": row.get("job"),
-                "event": row.get("event"),
-                "urgency": row.get("urgency"),
-                "urgency_note": row.get("urgency_note"),
-                "mail_time": row.get("received_at"),
-                "deadline": row.get("deadline"),
-                "action": row.get("action"),
-                "subject": row.get("subject"),
-                "archive_path": row.get("archive_text"),
-                "action_url": row.get("action_url"),
-                "mail_key": row.get("mail_key"),
-                "task_record_id": str((task_records.get(_mail_reference(
-                    row.get("company"),
-                    row.get("subject") or row.get("archive_text") or row.get("event"),
-                    row.get("mail_key"),
-                )) or {}).get("record_id") or ""),
-                "resolution": str((task_records.get(_mail_reference(
-                    row.get("company"),
-                    row.get("subject") or row.get("archive_text") or row.get("event"),
-                    row.get("mail_key"),
-                )) or {}).get("resolution") or ""),
-            }
-            for row in active[:30]
-        ],
+        "items": [_dashboard_mail_item(row, task_records) for row in active[:30]],
     }
 
 

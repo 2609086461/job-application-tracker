@@ -17,11 +17,11 @@ from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from app import mail_store
-from company_aliases import canonical_company_name, company_key
+from company_aliases import COMPANY_ALIASES, canonical_company_name, company_key
 from tools.feishu import sync_recruitment_tasks
 from tools.mail.codex_batch_analyzer import (
     DEFAULT_FAST_MODEL,
@@ -58,6 +58,8 @@ summary（供看板直接展示的两句公司简介，最多150字）。不要�
 
 _EVENT_CONTEXT = re.compile(r"招聘|测评|笔试|机考|面试|一面|二面|三面|岗位|匹配|事项")
 _BAD_SOURCE_CONTEXT = re.compile(r"输入网页资料|所给网页|输入材料|未提供.{0,20}公开信息|未提供.{0,20}公司")
+_NON_COMPANY_BAIKE = re.compile(r"自媒体|网络名称|网络红人|图书|歌曲|电视剧|电影|虚拟人物|主持人")
+_WEAK_SUMMARY = re.compile(r"公开网页资料仅提供|相关公司信息未确认|均未确认|未明确说明其所属行业")
 _INSUFFICIENT_SUMMARY = "公开资料不足，暂未生成可靠公司简介。"
 _UNAVAILABLE_SUMMARY = "暂无简介"
 
@@ -181,6 +183,89 @@ def _download(url: str) -> tuple[str, str]:
         return final_url, response.read(350_000).decode(charset, errors="replace")
 
 
+def _download_json(url: str) -> tuple[str, dict]:
+    """Read a small public JSON response, refusing redirects to non-web URLs."""
+    request = Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; JobTrackerProfile/1.0)",
+        "Accept": "application/json, text/plain, */*",
+    })
+    with urlopen(request, timeout=15) as response:  # noqa: S310 -- fixed public Baike endpoint below
+        final_url = response.geturl()
+        if urlparse(final_url).scheme not in {"http", "https"}:
+            raise ValueError("公开资料返回了不支持的协议")
+        try:
+            value = json.loads(response.read(350_000).decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("公开资料未返回有效 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("公开资料 JSON 格式无效")
+    return final_url, value
+
+
+def _html_text(value: object) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", unescape(str(value or "")))).strip()
+
+
+def _baike_query_terms(company: str) -> list[str]:
+    """Use the canonical display name and Chinese legal-name aliases, once each."""
+    terms = [company]
+    for canonical, aliases in COMPANY_ALIASES:
+        if canonical != company:
+            continue
+        chinese_aliases = [
+            alias for alias in aliases
+            if re.search(r"[\u4e00-\u9fff]", alias)
+            and len(re.sub(r"[^\u4e00-\u9fff]", "", alias)) >= 4
+        ]
+        terms.extend(sorted(chinese_aliases, key=len, reverse=True))
+        break
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def _baike_card_source(company: str) -> dict | None:
+    """Return structured public facts from Baidu Baike's public lemma-card API."""
+    endpoint = "https://baike.baidu.com/api/openapi/BaikeLemmaCardApi?scope=103&format=json&appid=379020&bk_length=600&bk_key="
+    for term in _baike_query_terms(company):
+        try:
+            _, card = _download_json(endpoint + quote(term))
+        except (OSError, ValueError):
+            continue
+        title = _html_text(card.get("title"))
+        description = _html_text(card.get("desc"))
+        if not title or not description:
+            continue
+        if _NON_COMPANY_BAIKE.search(description):
+            continue
+        lemma = _html_text(card.get("key")) or term
+        term_token = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", term.lower())
+        title_token = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", title.lower())
+        lemma_token = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", lemma.lower())
+        if term_token not in title_token and term_token not in lemma_token:
+            continue
+        facts = []
+        for item in card.get("card") or []:
+            if not isinstance(item, dict):
+                continue
+            name = _html_text(item.get("name"))
+            values = item.get("format") or item.get("value") or []
+            if isinstance(values, list):
+                text = "；".join(_html_text(value) for value in values if _html_text(value))
+            else:
+                text = _html_text(values)
+            if name and text:
+                facts.append(f"{name}：{text}")
+        text = " ".join([title, description, *facts])[:MAX_SOURCE_TEXT]
+        if len(text) < 40:
+            continue
+        return {
+            "url": "https://baike.baidu.com/item/" + quote(lemma),
+            "title": title[:160],
+            "description": description[:500],
+            "text": text,
+        }
+    return None
+
+
 def _search_urls(company: str) -> list[str]:
     urls: list[str] = []
     try:
@@ -239,7 +324,10 @@ def _bing_search_urls(company: str) -> list[str]:
 
 
 def fetch_public_source(company: str) -> dict:
-    """Fetch a short text excerpt from a public search result, without credentials."""
+    """Fetch public company facts, preferring Baike over less structured web pages."""
+    baike = _baike_card_source(company)
+    if baike:
+        return baike
     failures: list[str] = []
     for url in _search_urls(company):
         try:
@@ -247,6 +335,9 @@ def fetch_public_source(company: str) -> dict:
             parser = _PageParser()
             parser.feed(page)
             text = " ".join(parser.text_parts)
+            parsed = urlparse(final_url)
+            if "accessrestriction" in parsed.path.lower() or re.search(r"安全验证|访问受限|captcha", parser.title + " " + text[:500], re.IGNORECASE):
+                raise ValueError("网页为访问限制页")
             if len(text) < 120:
                 raise ValueError("网页正文不足")
             return {
@@ -290,6 +381,18 @@ def _company_only_summary(summary: object) -> str:
     return _clip("".join(kept), 150) or _INSUFFICIENT_SUMMARY
 
 
+def _profile_is_insufficient(profile: dict) -> bool:
+    """Reject polished-looking output that still contains no usable company facts."""
+    summary = str(profile.get("summary") or "")
+    industry = str(profile.get("industry") or "")
+    business = str(profile.get("business") or "")
+    return (
+        summary == _INSUFFICIENT_SUMMARY
+        or bool(_WEAK_SUMMARY.search(summary))
+        or (industry == "未确认" and business == "未确认")
+    )
+
+
 def clean_existing_profiles() -> dict:
     """One-time, lossless-in-scope migration to company-only profile records."""
     store = _load_store()
@@ -311,9 +414,9 @@ def clean_existing_profiles() -> dict:
 
 
 def summarize_public_source(company: str, source: dict) -> dict:
-    model = resolve_model("COMPANY_PROFILE_MODEL", DEFAULT_FAST_MODEL)
     codex_bin = _codex_binary()
     _assert_chatgpt_login(codex_bin)
+    model = resolve_model("COMPANY_PROFILE_MODEL", DEFAULT_FAST_MODEL)
     with tempfile.TemporaryDirectory(prefix="job-tracker-profile-") as folder:
         root = Path(folder)
         schema_path = root / "schema.json"
@@ -321,13 +424,16 @@ def summarize_public_source(company: str, source: dict) -> dict:
         schema_path.write_text(json.dumps(PROFILE_SCHEMA, ensure_ascii=False), encoding="utf-8")
         import subprocess
 
+        command = [
+            codex_bin, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            "--skip-git-repo-check", "--sandbox", "read-only",
+            "--config", 'model_reasoning_effort="low"', "--cd", str(root),
+            "--output-schema", str(schema_path), "--output-last-message", str(result_path), PROFILE_PROMPT,
+        ]
+        if model:
+            command[command.index("--config"):command.index("--config")] = ["--model", model]
         completed = subprocess.run(
-            [
-                codex_bin, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-                "--skip-git-repo-check", "--sandbox", "read-only", "--model", model,
-                "--config", 'model_reasoning_effort="low"', "--cd", str(root),
-                "--output-schema", str(schema_path), "--output-last-message", str(result_path), PROFILE_PROMPT,
-            ],
+            command,
             input=json.dumps({"company": company, "source": source}, ensure_ascii=False),
             capture_output=True,
             text=True,
@@ -351,7 +457,9 @@ def summarize_public_source(company: str, source: dict) -> dict:
     }
 
 
-def process_companies(companies: list[str], *, limit: int, retry_errors: bool = False) -> dict:
+def process_companies(
+    companies: list[str], *, limit: int, retry_errors: bool = False, refresh_ready: bool = False,
+) -> dict:
     """Generate selected profiles; error entries retry only when explicitly requested."""
     if limit <= 0:
         raise ValueError("limit 必须大于 0")
@@ -363,7 +471,7 @@ def process_companies(companies: list[str], *, limit: int, retry_errors: bool = 
     attempted = ready = failed = 0
     for key, company in selected.items():
         existing = profiles.get(key) if isinstance(profiles.get(key), dict) else {}
-        if existing.get("status") == "ready":
+        if existing.get("status") == "ready" and not refresh_ready:
             continue
         if existing.get("status") == "error" and not retry_errors:
             continue
@@ -371,6 +479,8 @@ def process_companies(companies: list[str], *, limit: int, retry_errors: bool = 
         try:
             source = fetch_public_source(company)
             profile = summarize_public_source(company, source)
+            if _profile_is_insufficient(profile):
+                raise RuntimeError("公开资料不足")
             profiles[key] = {
                 "status": "ready", "company": company, **profile,
                 "source_url": source["url"], "source_title": source.get("title", ""),
@@ -411,7 +521,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = clean_existing_profiles() if args.clean_cache else (
-            process_companies(args.company, limit=args.limit, retry_errors=True)
+            process_companies(args.company, limit=args.limit, retry_errors=True, refresh_ready=True)
             if args.company else process_pending(limit=args.limit)
         )
     except (OSError, RuntimeError, ValueError, CodexAnalysisError) as exc:

@@ -10,6 +10,33 @@ class CompanyAliasTests(unittest.TestCase):
         self.assertEqual({canonical_company_name(value) for value in aliases}, {"小米"})
         self.assertEqual(len({company_key(value) for value in aliases}), 1)
 
+    def test_mindray_short_and_full_names_share_one_identity(self):
+        aliases = ["迈瑞", "迈瑞医疗", "深圳迈瑞生物医疗电子股份有限公司", "Mindray"]
+        self.assertEqual({canonical_company_name(value) for value in aliases}, {"迈瑞医疗"})
+        self.assertEqual(len({company_key(value) for value in aliases}), 1)
+
+    def test_willand_names_share_one_identity(self):
+        aliases = ["未岚大陆", "未岚大陆（Willand）", "未岚大陆（北京）科技股份有限公司"]
+        self.assertEqual({canonical_company_name(value) for value in aliases}, {"未岚大陆"})
+        self.assertEqual(len({company_key(value) for value in aliases}), 1)
+
+    def test_new_application_site_aliases_share_their_company_identity(self):
+        groups = {
+            "美的集团": ["美的", "Midea"],
+            "特斯拉中国": ["特斯拉", "Tesla"],
+            "西门子": ["西门子中国", "Siemens"],
+            "上海纳铁福": ["上海纳铁福传动系统有限公司"],
+            "360集团": ["360", "奇虎360"],
+            "傅利叶智能": ["傅利叶", "傅里叶", "傅里叶智能", "Fourier Intelligence", "fftai"],
+        }
+        for canonical, aliases in groups.items():
+            with self.subTest(canonical=canonical):
+                self.assertEqual(
+                    {canonical_company_name(value) for value in aliases},
+                    {canonical},
+                )
+                self.assertEqual(len({company_key(value) for value in aliases}), 1)
+
     def test_unknown_company_name_is_preserved(self):
         self.assertEqual(canonical_company_name("示例半导体有限公司"), "示例半导体有限公司")
         self.assertEqual(company_key("示例半导体有限公司"), "示例半导体")

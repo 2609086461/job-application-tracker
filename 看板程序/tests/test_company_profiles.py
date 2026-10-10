@@ -129,6 +129,89 @@ class CompanyProfileTests(unittest.TestCase):
 
         self.assertEqual(urls, [target])
 
+    def test_baike_card_is_preferred_as_the_public_source(self):
+        card = {
+            "key": "江波龙",
+            "title": "深圳市江波龙电子股份有限公司",
+            "desc": "主营半导体存储应用产品的上市公司。",
+            "card": [{"name": "主营业务", "format": ["半导体存储产品"]}],
+        }
+        with patch.object(company_profiles, "_download_json", return_value=("https://baike.baidu.com/api", card)) as fetch, \
+             patch.object(company_profiles, "_search_urls") as search:
+            source = company_profiles.fetch_public_source("江波龙")
+
+        self.assertEqual(source["title"], "深圳市江波龙电子股份有限公司")
+        self.assertIn("半导体存储产品", source["text"])
+        self.assertIn("baike.baidu.com/item", source["url"])
+        fetch.assert_called_once()
+        search.assert_not_called()
+
+    def test_ambiguous_baike_result_is_skipped_for_legal_name_alias(self):
+        wrong = {"key": "海光", "title": "海光", "desc": "主持人", "card": []}
+        right = {
+            "key": "海光信息技术股份有限公司",
+            "title": "海光信息技术股份有限公司",
+            "desc": "上市高端处理器研发公司，面向国内市场提供计算芯片产品。",
+            "card": [{"name": "主营业务", "format": ["高端处理器及相关芯片产品研发"]}],
+        }
+        with patch.object(company_profiles, "_download_json", side_effect=[
+            ("https://baike.baidu.com/api", wrong),
+            ("https://baike.baidu.com/api", right),
+        ]):
+            source = company_profiles._baike_card_source("海光信息")
+
+        self.assertEqual(source["title"], "海光信息技术股份有限公司")
+
+    def test_non_company_baike_result_falls_back_to_web_search(self):
+        wrong = {
+            "key": "OBSBOT寻影", "title": "OBSBOT寻影",
+            "desc": "自媒体创作者网络名称", "card": [],
+        }
+        page = "<html><title>OBSBOT</title><body>" + "智能影像产品与人工智能摄像头。" * 20 + "</body></html>"
+        with patch.object(company_profiles, "_download_json", return_value=("https://baike.baidu.com/api", wrong)), \
+             patch.object(company_profiles, "_search_urls", return_value=["https://www.obsbot.com/cn/about"]), \
+             patch.object(company_profiles, "_download", return_value=("https://www.obsbot.com/cn/about", page)):
+            source = company_profiles.fetch_public_source("OBSBOT寻影")
+
+        self.assertEqual(source["title"], "OBSBOT")
+        self.assertEqual(source["url"], "https://www.obsbot.com/cn/about")
+
+    def test_unconfirmed_summary_is_saved_as_unavailable(self):
+        source = {"url": "https://example.com", "title": "示例", "text": "搜索结果"}
+        weak = {
+            "industry": "未确认", "business": "未确认", "company_type": "未确认",
+            "summary": "公开网页资料仅提供了同名词条，相关公司信息未确认。",
+        }
+        with patch.object(company_profiles, "PROFILE_FILE", self.profile_file), \
+             patch.object(company_profiles, "fetch_public_source", return_value=source), \
+             patch.object(company_profiles, "summarize_public_source", return_value=weak):
+            result = company_profiles.process_companies(
+                ["示例"], limit=1, retry_errors=True, refresh_ready=True,
+            )
+            store = company_profiles._load_store()
+
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(store["profiles"]["示例"]["status"], "error")
+
+    def test_explicit_company_retry_refreshes_ready_profile(self):
+        self.profile_file.write_text(
+            '{"schema_version": 2, "profiles": {'
+            '"华为": {"status": "ready", "company": "华为", "summary": "旧简介"}'
+            '}}', encoding="utf-8",
+        )
+        source = {"url": "https://example.com", "title": "华为", "text": "公开资料"}
+        summary = {"industry": "通信", "business": "ICT", "company_type": "企业", "summary": "新简介。"}
+        with patch.object(company_profiles, "PROFILE_FILE", self.profile_file), \
+             patch.object(company_profiles, "fetch_public_source", return_value=source), \
+             patch.object(company_profiles, "summarize_public_source", return_value=summary):
+            result = company_profiles.process_companies(
+                ["华为"], limit=1, retry_errors=True, refresh_ready=True,
+            )
+            store = company_profiles._load_store()
+
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(store["profiles"]["华为"]["summary"], "新简介。")
+
 
 if __name__ == "__main__":
     unittest.main()

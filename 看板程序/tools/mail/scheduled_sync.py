@@ -48,15 +48,14 @@ def main() -> int:
         run = load_json(STATE_FILE, {}).get("last_run") or {}
         scanned = int(run.get("scanned") or 0)
         archived = int(run.get("archived") or 0)
-        archived_mail_keys = [
-            str(mail_key).strip()
-            for mail_key in (run.get("archived_mail_keys") or [])
-            if str(mail_key).strip()
-        ]
         if scanned == 0:
+            if args.apply:
+                run_module("tools.feishu.sync_recruitment_tasks", "--apply", "--missing-only")
             print("增量检查完成：没有新邮件，未启动 Codex，也未刷新下游任务。")
             return 0
         if archived == 0:
+            if args.apply:
+                run_module("tools.feishu.sync_recruitment_tasks", "--apply", "--missing-only")
             print(f"增量检查完成：发现 {scanned} 封新邮件，均非招聘邮件；无需刷新看板。")
             return 0
 
@@ -65,13 +64,10 @@ def main() -> int:
             run_module(module)
         if args.apply:
             run_module("tools.feishu.apply_feishu_mail_updates", "--confirm", "--new-only")
-            # The main-table update and the native Feishu task are separate
-            # projections of the same actionable mail.  Keep them together
-            # whenever this scheduled run is permitted to write changes.
-            task_args = ["--apply"]
-            for mail_key in archived_mail_keys:
-                task_args.extend(("--mail-key", mail_key))
-            run_module("tools.feishu.sync_recruitment_tasks", *task_args)
+            # Repair all currently missing task projections, not only tasks
+            # from this poll.  A transient Feishu failure must be retried even
+            # when no later recruitment mail arrives.
+            run_module("tools.feishu.sync_recruitment_tasks", "--apply", "--missing-only")
     except RuntimeError as exc:
         print(f"定时同步失败：{exc}")
         return 1

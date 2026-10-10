@@ -143,6 +143,10 @@ class ProjectLayoutTests(unittest.TestCase):
         from app.routers.dashboard import public_dashboard_data
 
         result = public_dashboard_data({
+            'reviews': [{
+                'company': '示例公司',
+                'url': 'https://feishu.example.com/docx/private',
+            }],
             'main': {'recent': [{
                 'company': '示例公司',
                 'job': '嵌入式软件',
@@ -166,6 +170,7 @@ class ProjectLayoutTests(unittest.TestCase):
         })
 
         self.assertEqual(result['access_mode'], 'public')
+        self.assertEqual(result['reviews'], [])
         self.assertNotIn('url', result['main']['recent'][0])
         self.assertEqual(result['mail']['items'][0]['subject'], '邮件待办')
         self.assertNotIn('archive_path', result['mail']['items'][0])
@@ -191,6 +196,41 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertIn('setTaskStatus(', page)
         self.assertNotIn('id="task-tbody"', page)
         self.assertNotIn('id="mail-tbody"', page)
+
+    def test_dashboard_has_search_filters_and_review_navigation(self):
+        page = (APP_DIR / 'static' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('id="recent-search"', page)
+        self.assertIn('id="recent-progress"', page)
+        self.assertIn('function renderRecent()', page)
+        self.assertIn('RECENT_PAGE_SIZE=20', page)
+        self.assertIn('id="review-search"', page)
+        self.assertIn('function renderReviews()', page)
+        self.assertIn('REVIEW_PAGE_SIZE=10', page)
+        self.assertNotIn('recent.slice(0,40)', page)
+
+    def test_optional_review_index_is_configurable_and_sorted(self):
+        from app import feishu
+
+        with patch.object(feishu, 'REVIEW_APP_TOKEN', ''), patch.object(feishu, 'REVIEW_TABLE_ID', ''):
+            self.assertEqual(feishu.get_recent_reviews(), [])
+
+        records = [
+            {'fields': {'公司': '早期公司', '岗位': '嵌入式', '轮次': '一面',
+                        '记录名称': '2026-09-08｜早期公司｜一面',
+                        '复盘文档': {'link': 'https://feishu.example.com/docx/early'}}},
+            {'fields': {'公司': '最近公司', '岗位': '驱动', '轮次': '二面',
+                        '记录名称': '2026-09-23｜最近公司｜二面',
+                        '复盘文档': {'link': 'https://feishu.example.com/docx/latest'}}},
+            {'fields': {'公司': '无链接公司', '复盘文档': None}},
+        ]
+        with patch.object(feishu, 'REVIEW_APP_TOKEN', 'example-app'), \
+             patch.object(feishu, 'REVIEW_TABLE_ID', 'example-table'), \
+             patch.object(feishu, 'list_records', return_value=records) as list_records:
+            reviews = feishu.get_recent_reviews()
+
+        list_records.assert_called_once_with('example-table', app_token='example-app')
+        self.assertEqual([item['company'] for item in reviews], ['最近公司', '早期公司'])
+        self.assertEqual(reviews[0]['round'], '二面')
 
 
 if __name__ == '__main__':

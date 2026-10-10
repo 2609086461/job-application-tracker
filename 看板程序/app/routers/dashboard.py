@@ -21,6 +21,14 @@ class TaskResolutionRequest(BaseModel):
     resolution: str
 
 
+class TaskPriorityRequest(BaseModel):
+    priority: str
+
+
+class TaskSyncRequest(BaseModel):
+    mail_key: str
+
+
 def _mail_data(tasks: dict) -> dict:
     items = tasks.get("items") or []
     return mail_store.get_dashboard_data(
@@ -45,6 +53,7 @@ def _empty(error: str) -> dict:
         },
         "mail": mail_store.get_dashboard_data(),
         "tasks": {"items": [], "pending_count": 0, "completed_count": 0},
+        "reviews": [],
         "company_profiles": {},
         "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "error": error,
@@ -89,6 +98,7 @@ def _public_tasks(tasks: dict) -> dict:
         "items": [
             {key: row.get(key, "") for key in (
                 "task", "company", "event", "status", "planned_at", "deadline", "resolution",
+                "priority", "priority_rank", "priority_source",
             )}
             for row in (tasks.get("items") or [])
         ],
@@ -99,6 +109,7 @@ def public_dashboard_data(data: dict) -> dict:
     return {
         **data,
         "access_mode": "public",
+        "reviews": [],
         "main": _public_main(data.get("main") or {}),
         "mail": _public_mail(data.get("mail") or {}),
         "tasks": _public_tasks(data.get("tasks") or {}),
@@ -183,6 +194,22 @@ def update_task_status(record_id: str, request: TaskStatusRequest):
         raise HTTPException(status_code=502, detail=feishu.friendly_error(exc)) from exc
 
 
+@router.post("/tasks/sync")
+def sync_missing_task(request: TaskSyncRequest):
+    try:
+        change = sync_recruitment_tasks.repair_missing_tasks(request.mail_key)
+        state.update(cache=None, cache_at=0)
+        data = refresh_dashboard()
+        data["task_sync"] = change
+        return data
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=feishu.friendly_error(exc)) from exc
+
+
 @router.post("/tasks/{record_id}/resolution")
 def resolve_task(record_id: str, request: TaskResolutionRequest):
     try:
@@ -191,6 +218,18 @@ def resolve_task(record_id: str, request: TaskResolutionRequest):
         data = refresh_dashboard()
         data["task_resolution"] = change
         return data
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=feishu.friendly_error(exc)) from exc
+
+
+@router.post("/tasks/{record_id}/priority")
+def update_task_priority(record_id: str, request: TaskPriorityRequest):
+    try:
+        return sync_recruitment_tasks.set_task_priority(record_id, request.priority)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

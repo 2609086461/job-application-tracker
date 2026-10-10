@@ -31,6 +31,8 @@ APP_SECRET = os.getenv("FEISHU_APP_SECRET")
 APP_TOKEN = os.getenv("FEISHU_APP_TOKEN")
 MAIN_TABLE_ID = os.getenv("MAIN_TABLE_ID")
 API = "https://open.feishu.cn/open-apis"
+REVIEW_APP_TOKEN = os.getenv("REVIEW_APP_TOKEN", "").strip()
+REVIEW_TABLE_ID = os.getenv("REVIEW_TABLE_ID", "").strip()
 
 # 缓存 wiki 节点 token -> 多维表格 app_token 的映射，避免每次请求都解析
 _APP_TOKEN_CACHE = {}
@@ -295,13 +297,14 @@ def _bitable_app_token():
 
 
 # ── 数据接口 ────────────────────────────────────────
-def list_records(table_id):
+def list_records(table_id, app_token=None):
     recs, pt = [], None
+    token = app_token or _bitable_app_token()
     while True:
         p = {"page_size": 500}
         if pt:
             p["page_token"] = pt
-        data = _feishu(f"/bitable/v1/apps/{_bitable_app_token()}/tables/{table_id}/records",
+        data = _feishu(f"/bitable/v1/apps/{token}/tables/{table_id}/records",
                        payload=p)
         recs.extend(data.get("items") or [])
         if not data.get("has_more"):
@@ -502,6 +505,19 @@ def _unwrap_url(val):
     return val
 
 
+def _option_values(value):
+    """Normalize Feishu single-select, multi-select and text field values."""
+    values = value if isinstance(value, list) else [value]
+    result = []
+    for item in values:
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("text") or item.get("value") or ""
+        text = str(item or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
 def get_main_stats():
     recs = list_records(MAIN_TABLE_ID)
     rows = [r["fields"] for r in recs if r.get("fields", {}).get("公司名称")]
@@ -512,7 +528,7 @@ def get_main_stats():
     progress, directions = Counter(), Counter()
     exam_counter, interview_counter, offer_counter = Counter(), Counter(), Counter()
     for f in rows:
-        progress_values = f.get("进展", []) or []
+        progress_values = _option_values(f.get("进展"))
         for p in progress_values:
             progress[p] += 1
         has_exam = "机考" in progress_values
@@ -526,7 +542,7 @@ def get_main_stats():
             interview_counter["面试中"] += 1
         if has_offer:
             offer_counter["Offer"] += 1
-        for d in f.get("岗位方向", []) or []:
+        for d in _option_values(f.get("岗位方向")):
             directions[d] += 1
     recent = [r for r in rows if r.get("投递时间") and r.get("投递时间") != 0]
     recent.sort(key=lambda f: f.get("投递时间", 0) or 0, reverse=True)
@@ -549,8 +565,8 @@ def get_main_stats():
         "deadlines": deadlines,
         "recent": [
             {"company": f.get("公司名称", ""),
-             "dir": f.get("岗位方向", []),
-             "progress": f.get("进展", []),
+             "dir": _option_values(f.get("岗位方向")),
+             "progress": _option_values(f.get("进展")),
              "job": f.get("秋招岗位", ""),
              "url": _unwrap_url(f.get("投递链接")),
              "deadline": f.get("投递截止时间", 0),
@@ -566,8 +582,48 @@ def get_main_stats():
     }
 
 
+def get_recent_reviews():
+    """Return interview-review links from the dedicated Feishu review index."""
+    if not REVIEW_APP_TOKEN or not REVIEW_TABLE_ID:
+        return []
+    rows = list_records(REVIEW_TABLE_ID, app_token=REVIEW_APP_TOKEN)
+    reviews = []
+    for record in rows:
+        fields = record.get("fields") or {}
+        document = fields.get("复盘文档") or {}
+        url = str(document.get("link") or "").strip() if isinstance(document, dict) else str(document).strip()
+        company = str(fields.get("公司") or "").strip()
+        if not company or not re.match(r"^https?://", url):
+            continue
+        timestamp = fields.get("实际时间") or 0
+        if not timestamp:
+            source = " ".join(str(fields.get(key) or "") for key in ("记录名称",))
+            match = re.search(r"(20\d{2})-(\d{1,2})-(\d{1,2})", source)
+            if match:
+                timestamp = int(datetime(
+                    int(match.group(1)), int(match.group(2)), int(match.group(3))
+                ).timestamp() * 1000)
+        reviews.append({
+            "company": company,
+            "job": str(fields.get("岗位") or "").strip(),
+            "round": str(fields.get("轮次") or "").strip(),
+            "date": timestamp,
+            "title": str(document.get("text") or fields.get("记录名称") or "").strip(),
+            "url": url,
+        })
+    reviews.sort(key=lambda item: item.get("date") or 0, reverse=True)
+    return reviews
+
+
 def get_dashboard_data():
+    try:
+        reviews = get_recent_reviews()
+    except Exception:
+        # The main tracker remains usable if the independent review index is
+        # temporarily unavailable or has not yet been shared with the app.
+        reviews = []
     return {
         "main": get_main_stats(),
+        "reviews": reviews,
         "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }

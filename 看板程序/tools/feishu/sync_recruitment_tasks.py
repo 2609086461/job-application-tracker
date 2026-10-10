@@ -36,6 +36,8 @@ TASK_RESOLUTIONS = {
     "done": "已补做",
     "skip": "已跳过",
 }
+MANUAL_PRIORITIES = {"", "高", "普通", "低"}
+PRIORITY_RANKS = {"高": 0, "普通": 1, "低": 2}
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class RecruitmentTask:
     title: str
     action: str
     source: str
+    job: str = ""
     source_key: str = ""
     deadline: datetime | None = None
     planned_at: datetime | None = None
@@ -70,6 +73,102 @@ def _company_key(value: str) -> str:
     for suffix in ("nvidia", "集团", "科技", "信息", "光学"):
         text = text.replace(suffix, "")
     return text
+
+
+def _event_family(event: str) -> str:
+    value = _text(event).strip()
+    # Keep an explicitly named interview round distinct.  Generic invitation
+    # and booked-interview notices resolve to the same interview action.
+    if value in {"一面", "二面", "三面", "四面", "终面", "主管面", "HR面"}:
+        return value
+    if "面试" in value:
+        return "面试"
+    if "笔试" in value or "机考" in value:
+        return "笔试/机考"
+    return value
+
+
+def _semantic_task_key(company: str, event: str) -> tuple[str, str]:
+    return _company_key(company), _event_family(event)
+
+
+def _job_key(value: str) -> str:
+    return " ".join(_text(value).casefold().split())
+
+
+def _deadline_day(value) -> str:
+    parsed = value if isinstance(value, datetime) else _timestamp(value)
+    return parsed.date().isoformat() if parsed else ""
+
+
+def _is_reminder(item: RecruitmentTask) -> bool:
+    text = f"{item.source} {item.action}"
+    return any(word in text for word in ("提醒", "催办", "未完成", "再次通知", "温馨提示"))
+
+
+def _matches_task_session(item: RecruitmentTask, fields: dict) -> bool:
+    item_event = _event_family(item.event)
+    record_event = _event_family(_text(fields.get("事项类型")))
+    interview_rounds = {"一面", "二面", "三面", "四面", "终面", "主管面", "HR面"}
+    event_matches = (
+        item_event == record_event
+        or (item_event == "面试" and record_event in interview_rounds)
+        or (record_event == "面试" and item_event in interview_rounds)
+    )
+    if _company_key(item.company) != _company_key(_text(fields.get("公司"))) or not event_matches:
+        return False
+
+    candidate_job = _job_key(item.job)
+    record_job = _job_key(_text(fields.get("岗位")))
+    if candidate_job and record_job and candidate_job != record_job:
+        return False
+
+    candidate_day = _deadline_day(item.deadline)
+    record_day = _deadline_day(fields.get("截止时间"))
+    if (
+        fields.get("状态") == "已完成"
+        and candidate_day
+        and record_day
+        and candidate_day != record_day
+        and not _is_reminder(item)
+    ):
+        # A completed earlier session should not absorb a clearly new
+        # invitation with a different scheduled/deadline date.
+        return False
+    return True
+
+
+def _semantic_record(item: RecruitmentTask, records: list[dict]) -> dict | None:
+    matches = [
+        record for record in records
+        if _matches_task_session(item, record.get("fields") or {})
+    ]
+    if not matches:
+        return None
+    # Reuse an open task first.  If it was already completed, that completion
+    # remains the deduplication anchor for follow-up mail about the same round.
+    matches.sort(key=lambda record: (
+        (record.get("fields") or {}).get("状态") == "已完成",
+        bool(_job_key(_text((record.get("fields") or {}).get("岗位"))) != _job_key(item.job)),
+        -int((record.get("fields") or {}).get("完成时间") or 0),
+    ))
+    return matches[0]
+
+
+def _is_result_notice(event: str, action: str, subject: str) -> bool:
+    if event in {"淘汰", "录用"}:
+        return True
+    text = f"{action} {subject}"
+    if event in {"测评", "笔试/机考"}:
+        return any(word in text for word in (
+            "结果通知", "结果查询", "成绩查询", "成绩通知", "考试结果", "测评结果",
+            "成绩公布", "感谢参与", "答题结束",
+        ))
+    if event in {"面试", "面试已预约", "一面", "二面", "三面", "终面"}:
+        return any(word in text for word in (
+            "面试反馈", "反馈邀请", "满意度调查", "反馈问卷", "感谢参与面试",
+        ))
+    return False
 
 
 def _parse_deadline(value) -> datetime | None:
@@ -165,11 +264,14 @@ def collect_candidates(mail_items: Iterable[dict], records: Iterable[dict], now:
         if item.get("event") == "面试已预约"
     }
     result: list[RecruitmentTask] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for item in mail_items:
         company = canonical_company_name(item.get("company") or "")
         event = str(item.get("event") or "").strip()
         action = str(item.get("action") or "").strip()
+        subject = str(item.get("subject") or "")
+        if _is_result_notice(event, action, subject):
+            continue
         company_key = _company_key(company)
         if not company or not event or (event == "面试" and company_key in scheduled):
             continue
@@ -180,13 +282,18 @@ def collect_candidates(mail_items: Iterable[dict], records: Iterable[dict], now:
         else:
             event_label = event
         expired = bool(deadline and deadline <= now)
-        semantic = (company_key, event_label)
+        job = str(item.get("job") or "").strip()
+        semantic = (company_key, _event_family(event_label), _job_key(job))
         if semantic in seen:
             continue
         seen.add(semantic)
         source = str(item.get("subject") or item.get("archive_path") or event)
         source_key = str(item.get("mail_key") or item.get("archive_path") or "")
-        digest = hashlib.sha256(f"{company_key}|{event_label}|{source}".encode("utf-8")).hexdigest()[:32]
+        # Mail subject and UID identify a message, not the user's action.  The
+        # stable key follows the employer, stage/round, job, and session day.
+        session = _deadline_day(deadline)
+        identity = f"{company_key}|{_event_family(event_label)}|{_job_key(job)}|{session}"
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
         result.append(RecruitmentTask(
             key=f"mail:{digest}",
             company=company,
@@ -194,6 +301,7 @@ def collect_candidates(mail_items: Iterable[dict], records: Iterable[dict], now:
             title=_title(company, event, action, expired=expired),
             action=action,
             source=source,
+            job=job,
             source_key=source_key,
             deadline=deadline,
             planned_at=_planned_at(event, deadline, now),
@@ -207,6 +315,7 @@ TABLE_FIELDS = [
     {"field_name": "任务", "type": 1},
     {"field_name": "公司", "type": 1},
     {"field_name": "事项类型", "type": 1},
+    {"field_name": "岗位", "type": 1},
     {"field_name": "截止时间", "type": 5},
     {"field_name": "计划完成时间", "type": 5},
     {"field_name": "状态", "type": 1},
@@ -220,6 +329,7 @@ TABLE_FIELDS = [
     {"field_name": "主表记录ID", "type": 1},
     {"field_name": "状态来源", "type": 1},
     {"field_name": "处置状态", "type": 1},
+    {"field_name": "手动优先级", "type": 1},
 ]
 
 
@@ -252,9 +362,27 @@ def ensure_status_source_field(table_id: str) -> None:
 def ensure_task_tracking_fields(table_id: str) -> None:
     """Add ledger fields introduced after the task table was first created."""
     fields = feishu.list_fields(table_id)
-    for field_name in ("状态来源", "来源键", "处置状态"):
+    for field_name in ("状态来源", "来源键", "处置状态", "手动优先级", "岗位"):
         if field_name not in fields:
             feishu.create_field(table_id, {"field_name": field_name, "type": 1})
+
+
+def task_priority(event: str, manual: str = "") -> dict:
+    """Return the effective priority; an explicit user choice wins."""
+    manual = _text(manual).strip()
+    if manual in PRIORITY_RANKS:
+        label = manual
+        source = "manual"
+    else:
+        event = _text(event)
+        if "面试" in event or event in {"一面", "二面", "三面"}:
+            label = "高"
+        elif "笔试" in event or "机考" in event:
+            label = "普通"
+        else:
+            label = "低"
+        source = "automatic"
+    return {"priority": label, "priority_rank": PRIORITY_RANKS[label], "priority_source": source}
 
 
 def ensure_tasklist(owner_id: str) -> dict:
@@ -317,6 +445,7 @@ def _record_fields(item: RecruitmentTask, native: dict, calendar_event_id: str) 
         "任务": item.title,
         "公司": item.company,
         "事项类型": item.event,
+        "岗位": item.job,
         "状态": "待完成",
         "飞书任务GUID": native.get("guid") or "",
         "计划日程ID": calendar_event_id,
@@ -341,17 +470,21 @@ def apply_candidates(items: Iterable[RecruitmentTask], owner_id: str) -> dict:
     ensure_task_tracking_fields(table_id)
     tasklist = ensure_tasklist(owner_id)
     tasklist_guid = str(tasklist["guid"])
+    existing_records = feishu.list_records(table_id)
     existing = {
         str((record.get("fields") or {}).get("任务键") or ""): record
-        for record in feishu.list_records(table_id)
+        for record in existing_records
     }
     calendar_id = ""
     created = 0
     repaired = 0
     skipped = 0
+    calendar_failed = 0
     for item in items:
-        if item.key in existing:
-            record = existing[item.key]
+        record = existing.get(item.key)
+        if record is None:
+            record = _semantic_record(item, existing_records)
+        if record is not None:
             fields = record.get("fields") or {}
             old_guid = str(fields.get("飞书任务GUID") or "")
             unreadable = not old_guid
@@ -379,6 +512,8 @@ def apply_candidates(items: Iterable[RecruitmentTask], owner_id: str) -> dict:
                     unreadable = True
             if not unreadable:
                 updates = {}
+                if item.job and not _text(fields.get("岗位")):
+                    updates["岗位"] = item.job
                 if item.source_key and not _text(fields.get("来源键")):
                     updates["来源键"] = item.source_key
                 if (
@@ -416,6 +551,8 @@ def apply_candidates(items: Iterable[RecruitmentTask], owner_id: str) -> dict:
                 "来源键": item.source_key,
                 "状态来源": "双向同步",
             }
+            if item.job:
+                updates["岗位"] = item.job
             if native.get("url"):
                 updates["飞书任务链接"] = {"link": native["url"], "text": "打开任务"}
             feishu.update_record(
@@ -425,29 +562,57 @@ def apply_candidates(items: Iterable[RecruitmentTask], owner_id: str) -> dict:
             )
             repaired += 1
             continue
+        # Reserve the durable ledger row before creating external objects.  If
+        # Tasks succeeds but Calendar is unavailable, the next 15-minute sync
+        # must see this row instead of creating another native task.
+        reserved = feishu.create_record(_record_fields(item, {}, ""), table_id=table_id)
+        record_id = str(reserved.get("record_id") or reserved.get("id") or "")
+        if not record_id:
+            raise RuntimeError(f"飞书未返回求职任务记录 ID：{item.title}")
+        created += 1
+
         native = feishu.create_task(_task_payload(item, tasklist_guid, owner_id))
         if not native.get("guid"):
             raise RuntimeError(f"飞书未返回任务 GUID：{item.title}")
+        task_updates = {
+            "飞书任务GUID": native.get("guid") or "",
+            "状态来源": "双向同步",
+        }
+        if native.get("url"):
+            task_updates["飞书任务链接"] = {"link": native["url"], "text": "打开任务"}
+        feishu.update_record(record_id, task_updates, table_id=table_id)
+
         calendar_event_id = ""
         if item.planned_at:
-            if not calendar_id:
-                calendar_id = str(feishu.get_primary_calendar().get("calendar_id") or "")
-            event = feishu.create_calendar_event(
-                calendar_id,
-                _calendar_payload(item),
-                idempotency_key="task-plan:" + hashlib.sha256(item.key.encode()).hexdigest()[:40],
-            )
-            calendar_event_id = str(event.get("event_id") or "")
-            if calendar_event_id:
-                feishu.add_calendar_event_attendees(
+            try:
+                if not calendar_id:
+                    calendar_id = str(feishu.get_primary_calendar().get("calendar_id") or "")
+                event = feishu.create_calendar_event(
                     calendar_id,
-                    calendar_event_id,
-                    [{"type": "user", "user_id": owner_id, "is_optional": False}],
-                    user_id_type="union_id",
-                    need_notification=True,
+                    _calendar_payload(item),
+                    idempotency_key="task-plan:" + hashlib.sha256(item.key.encode()).hexdigest()[:40],
                 )
-        feishu.create_record(_record_fields(item, native, calendar_event_id), table_id=table_id)
-        created += 1
+                calendar_event_id = str(event.get("event_id") or "")
+                if calendar_event_id:
+                    # Persist the event ID before inviting attendees.  Even if
+                    # the invitation call fails, the event remains traceable.
+                    feishu.update_record(
+                        record_id,
+                        {"计划日程ID": calendar_event_id},
+                        table_id=table_id,
+                    )
+                    feishu.add_calendar_event_attendees(
+                        calendar_id,
+                        calendar_event_id,
+                        [{"type": "user", "user_id": owner_id, "is_optional": False}],
+                        user_id_type="union_id",
+                        need_notification=True,
+                    )
+            except Exception:
+                # Calendar is an optional early-finish aid.  A missing app bot
+                # or a transient calendar error must not roll back the task
+                # ledger and cause duplicate native tasks on the next sync.
+                calendar_failed += 1
     return {
         "table_id": table_id,
         "tasklist_guid": tasklist_guid,
@@ -455,6 +620,7 @@ def apply_candidates(items: Iterable[RecruitmentTask], owner_id: str) -> dict:
         "created": created,
         "repaired": repaired,
         "skipped": skipped,
+        "calendar_failed": calendar_failed,
     }
 
 
@@ -573,6 +739,27 @@ def set_task_status(record_id: str, completed: bool) -> dict:
     }
 
 
+def set_task_priority(record_id: str, priority: str) -> dict:
+    """Persist a dashboard priority override without touching native task state."""
+    priority = _text(priority).strip()
+    if priority not in MANUAL_PRIORITIES:
+        raise ValueError("优先级只能是自动、高、普通或低")
+    table_id = find_task_table()
+    if not table_id:
+        raise LookupError("求职任务表不存在")
+    target = next(
+        (record for record in feishu.list_records(table_id)
+         if str(record.get("record_id") or "") == record_id),
+        None,
+    )
+    if not target:
+        raise LookupError("任务不存在或已被删除")
+    ensure_task_tracking_fields(table_id)
+    feishu.update_record(record_id, {"手动优先级": priority}, table_id=table_id)
+    event = _text((target.get("fields") or {}).get("事项类型"))
+    return {"record_id": record_id, "manual_priority": priority, **task_priority(event, priority)}
+
+
 def resolve_task(record_id: str, resolution: str) -> dict:
     """Record how a mail action will be handled.
 
@@ -687,14 +874,16 @@ def cleanup_duplicate_calendar_events() -> dict:
     return {"checked": len(records), "deleted": deleted, "updated": updated}
 
 
-def dashboard_data(*, force_reconcile: bool = False) -> dict:
+def dashboard_data(*, force_reconcile: bool = False, allow_reconcile: bool = True) -> dict:
     """Return task rows and reconcile native completion at a bounded rate."""
     global _LAST_RECONCILE_AT
     table_id = find_task_table()
     if not table_id:
         return {"items": [], "pending_count": 0, "completed_count": 0, "last_reconciled": ""}
     monotonic_now = time.monotonic()
-    should_reconcile = force_reconcile or monotonic_now - _LAST_RECONCILE_AT >= RECONCILE_INTERVAL_SECONDS
+    should_reconcile = allow_reconcile and (
+        force_reconcile or monotonic_now - _LAST_RECONCILE_AT >= RECONCILE_INTERVAL_SECONDS
+    )
     if should_reconcile:
         reconcile_completion(table_id)
         _LAST_RECONCILE_AT = monotonic_now
@@ -706,6 +895,8 @@ def dashboard_data(*, force_reconcile: bool = False) -> dict:
         link = fields.get("飞书任务链接")
         if isinstance(link, dict):
             link = link.get("link") or ""
+        manual_priority = _text(fields.get("手动优先级")).strip()
+        priority = task_priority(_text(fields.get("事项类型")), manual_priority)
         items.append({
             "record_id": str(record.get("record_id") or ""),
             "task": _text(fields.get("任务")),
@@ -716,6 +907,8 @@ def dashboard_data(*, force_reconcile: bool = False) -> dict:
             "source_key": _text(fields.get("来源键")),
             "native_sync_pending": fields.get("状态来源") == "看板",
             "resolution": _text(fields.get("处置状态")),
+            "manual_priority": manual_priority if manual_priority in MANUAL_PRIORITIES else "",
+            **priority,
             "deadline": fields.get("截止时间") or 0,
             "planned_at": fields.get("计划完成时间") or 0,
             "completed_at": fields.get("完成时间") or 0,
@@ -723,6 +916,7 @@ def dashboard_data(*, force_reconcile: bool = False) -> dict:
         })
     items.sort(key=lambda item: (
         item["status"] == "已完成",
+        item["priority_rank"],
         item["planned_at"] or item["deadline"] or 9_999_999_999_999,
         item["task"],
     ))
@@ -743,6 +937,38 @@ def preview(items: Iterable[RecruitmentTask]) -> list[dict]:
     } for item in items]
 
 
+def collect_missing_candidates(
+    now: datetime | None = None,
+    mail_keys: set[str] | None = None,
+) -> list[RecruitmentTask]:
+    """Return active mail actions that still have no task-ledger association."""
+    current = now or now_shanghai()
+    task_state = dashboard_data(allow_reconcile=False)
+    mail = mail_store.get_dashboard_data(
+        current,
+        handled_references=mail_store.completed_mail_references(task_state.get("items") or []),
+        task_records=mail_store.mail_task_records(task_state.get("items") or []),
+    )
+    rows = [item for item in (mail.get("items") or []) if not item.get("task_record_id")]
+    keys = {str(value).strip() for value in (mail_keys or set()) if str(value).strip()}
+    if keys:
+        rows = [item for item in rows if str(item.get("mail_key") or "") in keys]
+    records = feishu.list_records(feishu.MAIN_TABLE_ID)
+    return collect_candidates(rows, records, current)
+
+
+def repair_missing_tasks(mail_key: str = "") -> dict:
+    """Idempotently create missing task records for active mail actions."""
+    key = str(mail_key or "").strip()
+    items = collect_missing_candidates(mail_keys={key} if key else set())
+    if key and not items:
+        raise LookupError("该邮件已经关联任务，或已不在待办列表中")
+    if not items:
+        return {"candidates": 0, "created": 0, "repaired": 0, "skipped": 0}
+    owner_id = os.getenv("FEISHU_REMINDER_USER_ID", DEFAULT_OWNER_ID).strip()
+    return {"candidates": len(items), **apply_candidates(items, owner_id)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="同步秋招待办到飞书任务")
     parser.add_argument("--apply", action="store_true", help="创建任务清单、任务和计划日程")
@@ -751,6 +977,11 @@ def main() -> int:
         action="append",
         default=[],
         help="仅同步指定邮件键对应的待办；可重复传入",
+    )
+    parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="仅补建当前看板中尚未关联求职任务的待办",
     )
     parser.add_argument("--reconcile", action="store_true", help="回写已完成的飞书任务")
     parser.add_argument(
@@ -761,16 +992,23 @@ def main() -> int:
     args = parser.parse_args()
     try:
         now = now_shanghai()
-        records = feishu.list_records(feishu.MAIN_TABLE_ID)
-        mail_items = mail_store.get_dashboard_data(now).get("items") or []
         mail_keys = {str(value).strip() for value in args.mail_key if str(value).strip()}
-        if mail_keys:
-            mail_items = [item for item in mail_items if str(item.get("mail_key") or "") in mail_keys]
-        items = collect_candidates(mail_items, records, now)
+        if args.missing_only:
+            items = collect_missing_candidates(now, mail_keys)
+        else:
+            records = feishu.list_records(feishu.MAIN_TABLE_ID)
+            mail_items = mail_store.get_dashboard_data(now).get("items") or []
+            if mail_keys:
+                mail_items = [item for item in mail_items if str(item.get("mail_key") or "") in mail_keys]
+            items = collect_candidates(mail_items, records, now)
         print(json.dumps({"count": len(items), "items": preview(items)}, ensure_ascii=False, indent=2))
         if args.apply:
-            owner_id = os.getenv("FEISHU_REMINDER_USER_ID", DEFAULT_OWNER_ID).strip()
-            print(json.dumps(apply_candidates(items, owner_id), ensure_ascii=False, indent=2))
+            if items:
+                owner_id = os.getenv("FEISHU_REMINDER_USER_ID", DEFAULT_OWNER_ID).strip()
+                result = {"candidates": len(items), **apply_candidates(items, owner_id)}
+            else:
+                result = {"candidates": 0, "created": 0, "repaired": 0, "skipped": 0}
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.reconcile:
             print(json.dumps(reconcile_completion(), ensure_ascii=False, indent=2))
         if args.cleanup_calendar_duplicates:
